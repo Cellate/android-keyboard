@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Voxis</string>
+    <string name="recognition_service_name">Voxis Offline Speech</string>
+    <string name="voice_input_title">Voxis Dictation</string>
+</resources>

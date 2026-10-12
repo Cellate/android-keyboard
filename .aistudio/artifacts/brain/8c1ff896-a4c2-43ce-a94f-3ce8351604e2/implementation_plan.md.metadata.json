@@ -1,0 +1,6 @@
+{
+  "summary": "Revised plan adding strict de-googled phone compatibility (GrapheneOS, CalyxOS, LineageOS, AOSP): Zero dependency on Google Play Services (GMS), Google speech services, or proprietary binaries. Pure local-first AOSP speech services, open-source model execution, and offline operation.",
+  "updatedAt": "2026-10-12T12:23:16.642221497Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
