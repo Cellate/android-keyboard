@@ -1,0 +1,129 @@
+================================================================================
+VOXIS - AI DEVELOPER INSTRUCTIONS & PROJECT GOVERNANCE (DO NOT DELETE)
+================================================================================
+Project: Voxis - Offline Dictation & De-Googled STT (Android + Web Companion)
+Maintainer / User Priority: Hinglish (Code-Mixed), English, Hindi
+Target Operating Systems: GrapheneOS, CalyxOS, LineageOS, Standard AOSP
+
+--------------------------------------------------------------------------------
+1. CRITICAL RULES & NON-NEGOTIABLES (WHAT NOT TO DO)
+--------------------------------------------------------------------------------
+- NEVER RE-INTRODUCE FAKE / CANNED TRANSCRIPTION TEXT:
+  The app must never generate hardcoded mock words or simulated text sequences
+  (such as "Voice input active and listening This is an offline dictation test...").
+  If no model is loaded, show a clear warning banner guiding the user to the
+  Models tab. Real audio capture (16kHz PCM mono via AudioRecord) must only feed
+  genuine speech recognition pipelines or system AOSP speech engines.
+
+- NEVER REMOVE THE LOCAL STORAGE MODEL PICKER:
+  The user explicitly tests the app with downloaded models stored on their phone.
+  The SAF Document Picker (`ActivityResultContracts.OpenDocument()`) in the
+  Models tab MUST remain functional so users can import `.bin`, `.gguf`, `.onnx`,
+  or `.zip` files from their device's Downloads/storage.
+
+- NEVER HARDCODE DEPENDENCY ON GOOGLE PLAY SERVICES (GMS):
+  Voxis is strictly de-googled. No Firebase, Google Play Services, Google Play
+  Billing, Google Speech Cloud API, or proprietary Google binaries.
+  All recognition services must implement standard AOSP APIs
+  (`android.speech.RecognitionService`) with 100% offline execution.
+
+- NEVER REMOVE "dev" SCRIPT IN package.json:
+  `package.json` must always retain `"dev": "node server.js"`. The AI Studio
+  supervisor requires this script to start the container dev server on port 3000.
+
+- NEVER DELETE EXISTING ANDROID ARCHITECTURE:
+  Keep `:dictation-sdk` modular, decoupled from `:app`.
+
+- OFFLOAD HEAVY BUILDS TO GITHUB ACTIONS (TOKEN CONSERVATION MANDATE):
+  Do not waste model context or tokens executing heavy `./gradlew assembleDebug`
+  build runs during conversational and development turns. All APK compilation,
+  NDK C++ builds, artifact archiving, and linting are strictly offloaded to
+  GitHub Actions (`.github/workflows/build-apk.yml` and `.github/workflows/ci.yml`).
+  Utilize LLM tokens exclusively for core software architecture, C++ systems
+  engineering, and Kotlin implementation.
+
+--------------------------------------------------------------------------------
+2. LANGUAGE PRIORITIES & MODELS
+--------------------------------------------------------------------------------
+The user's explicit workload priorities:
+1. PRIMARY: Hinglish (Code-mixed Hindi + English, e.g., "Haan bhai, schedule meeting")
+2. SECONDARY: English (Pure English, US/UK/Indian accents)
+3. TERTIARY: Hindi (हिन्दी / Pure Devanagari script)
+
+Verified Working Download Links (Hugging Face / Alphacephei CDN):
+- Whisper Tiny Multilingual (Hinglish / Multi - 75 MB):
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+- Whisper Base Multilingual (Hinglish High Accuracy - 142 MB):
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+- Whisper Tiny English (Fast English <200ms - 75 MB):
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+- Whisper Base English (Standard English - 142 MB):
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+- Vosk Hindi Small (Native Devanagari Offline - 42 MB):
+  https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip
+- Whisper Small Multilingual (Heavy Indic / Multi - 466 MB):
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+
+--------------------------------------------------------------------------------
+3. ARCHITECTURAL BLUEPRINT
+--------------------------------------------------------------------------------
+- Model Storage: Internal app directory `context.filesDir/models/`.
+- Model Manager (`org.voxis.dictation.engine.ModelManager`):
+  * Manages predefined models and user-imported custom models.
+  * Handles HTTP/HTTPS streaming downloads with redirect following (Hugging Face CDN).
+  * Imports external files via ContentResolver with sanitization.
+  * Persists active model ID in `SharedPreferences`.
+- Speech Service (`org.voxis.dictation.service.VoxisRecognitionService`):
+  * Implements `android.speech.RecognitionService`.
+  * Allows open-source keyboards (HeliBoard, FlorisBoard, OpenBoard) to use Voxis
+    as their system-wide offline voice input provider.
+  * Dynamically queries `ModelManager.getActiveModel()` to serve the active language.
+- Client SDK (`org.voxis.dictation.client.DictationClient`):
+  * Manages AudioRecord streamer (16kHz PCM), Voice Activity Detection (VAD),
+    audio focus arbitration, Bluetooth SCO, and dynamic model updates.
+- Web Companion (`server.js`):
+  * Runs on port 3000 (`0.0.0.0`).
+  * Serves browser overview, integration documentation, model links, and direct
+    APK download endpoint at `/app-debug.apk`.
+
+--------------------------------------------------------------------------------
+4. CHANGELOG & PROGRESS HISTORY
+--------------------------------------------------------------------------------
+- Version 1.0.0:
+  * Extracted core dictation pipeline from AOSP/LatinIME foundation.
+  * Built `:dictation-sdk` modular Android library.
+  * Created Jetpack Compose UI with Studio, Models, System Setup, and SDK tabs.
+  * Registered `VoxisRecognitionService` in `AndroidManifest.xml` with
+    `BIND_RECOGNITION_SERVICE` intent filter.
+
+- Version 1.1.0:
+  * REMOVED mock vocabulary array from `WhisperInferenceEngine.kt` to prevent
+    misleading canned transcriptions.
+  * Added `ModelManager.kt` supporting real model file verification on disk.
+  * Added "Import Model from Phone Storage" via Storage Access Framework (SAF).
+  * Added in-app background downloader with live progress percentage and speed.
+  * Added direct download link copying and "Open in Browser" action buttons.
+  * Added multi-language model registry specifically focusing on:
+    - Hinglish (code-mixed Hindi-English)
+    - English
+    - Hindi (Devanagari)
+  * Added `INTERNET` permission to `AndroidManifest.xml` for model downloading.
+  * Connected `VoxisRecognitionService` to dynamic active model language routing.
+  * Added `"dev": "node server.js"` to `package.json` ensuring seamless AI Studio dev server execution.
+  * Verified full Android Gradle compilation (`compile_applet`) producing 16.4MB APK.
+
+- Version 1.2.0:
+  * Added Native C++ JNI Bridge (`whisper_jni.cpp`) with asset/file loader and thread-safe inference.
+  * Created `CMakeLists.txt` for `arm64-v8a` target with NEON/FP16/dotprod optimizations.
+  * Added `WhisperNativeEngine.kt` JNI bridge wrapper with single-threaded execution executor.
+  * Added `AudioRecorderManager.kt` capturing 16kHz PCM 16-bit, normalizing to `[-1.0, 1.0]` floats, with 3-5s energy-based VAD chunking.
+  * Added `HinglishPromptConfig.kt` with custom prompt conditioning (`initial_prompt = "Hinglish speech transcription, conversational tone, Latin script with punctuation: yaar, theek hai, kya scene hai, kaise ho."`, `language = "hi"`, `translate = false`).
+  * Created `TranscriptionViewModel.kt` with coroutine offloading (`Dispatchers.Default` inference, `Dispatchers.IO` file I/O) and `StateFlow<String>` live transcript flow.
+
+- Version 1.3.0:
+  * Offloaded Android Gradle build pipeline, APK assembly, and artifact archiving to GitHub Actions.
+  * Added `.github/workflows/build-apk.yml` with automated APK build, Gradle caching, artifact upload (30-day retention), and GitHub Releases on tags.
+  * Added `.github/workflows/ci.yml` for automated linting and unit testing on PRs and commits.
+  * Established strict token efficiency mandate: reserved AI model tokens for systems coding and architecture rather than redundant build execution.
+================================================================================
+

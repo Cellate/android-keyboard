@@ -19,11 +19,18 @@ class VoxisRecognitionService : RecognitionService() {
         activeCallback = callback
         activeClient?.cancel()
 
-        val language = recognizerIntent?.getStringExtra("android.speech.extra.LANGUAGE") ?: "en"
-        val model = if (language.startsWith("en", ignoreCase = true)) {
-            SpeechModel.TinyEnglish
+        val requestedLanguage = recognizerIntent?.getStringExtra("android.speech.extra.LANGUAGE")
+        val activeModel = org.voxis.dictation.engine.ModelManager.getActiveModel(this)
+        val model = if (!requestedLanguage.isNullOrBlank()) {
+            if (requestedLanguage.startsWith("hi", ignoreCase = true)) {
+                SpeechModel.HINGLISH_TINY
+            } else if (requestedLanguage.startsWith("en", ignoreCase = true)) {
+                SpeechModel.ENGLISH_TINY
+            } else {
+                activeModel
+            }
         } else {
-            SpeechModel.SmallMultilingual
+            activeModel
         }
 
         val client = DictationClient.builder(this)

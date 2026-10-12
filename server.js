@@ -3,7 +3,18 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = 3000;
-const APK_PATH = path.join(__dirname, 'app/build/outputs/apk/debug/app-debug.apk');
+const POSSIBLE_APK_PATHS = [
+  path.join(__dirname, '.build-outputs/app-debug.apk'),
+  path.join(__dirname, 'app/build/outputs/apk/debug/app-debug.apk'),
+  path.join(__dirname, 'app-debug.apk')
+];
+
+function getApkPath() {
+  for (const p of POSSIBLE_APK_PATHS) {
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
 
 const HTML_CONTENT = `<!DOCTYPE html>
 <html lang="en">
@@ -154,6 +165,41 @@ const HTML_CONTENT = `<!DOCTYPE html>
       </div>
     </div>
 
+    <div class="card" style="margin-bottom: 32px;">
+      <h3>📥 Offline Models for Hinglish, English, and Hindi</h3>
+      <p style="color:var(--text-muted);font-size:14px;margin-bottom:16px;">Download any of these verified models to your device and select or import them inside the app's <strong>Models</strong> tab:</p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div style="background:#0F172A; padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-weight:700; color:#10B981;">Whisper Tiny (Hinglish Code-Mixed & Multilingual)</div>
+            <div style="color:#94A3B8; font-size:13px;">75 MB &bull; High-speed code-mixed Hindi + English on mobile CPU</div>
+          </div>
+          <a href="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin" target="_blank" class="btn" style="padding:6px 14px; font-size:13px;">Download (75MB)</a>
+        </div>
+        <div style="background:#0F172A; padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-weight:700; color:#10B981;">Whisper Base (Hinglish & Multilingual High-Accuracy)</div>
+            <div style="color:#94A3B8; font-size:13px;">142 MB &bull; High precision for complex Hinglish vocabulary & slang</div>
+          </div>
+          <a href="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin" target="_blank" class="btn" style="padding:6px 14px; font-size:13px;">Download (142MB)</a>
+        </div>
+        <div style="background:#0F172A; padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-weight:700; color:#38BDF8;">Whisper Tiny (English Pure)</div>
+            <div style="color:#94A3B8; font-size:13px;">75 MB &bull; Ultra-fast English dictation with &lt;200ms latency</div>
+          </div>
+          <a href="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin" target="_blank" class="btn" style="padding:6px 14px; font-size:13px;">Download (75MB)</a>
+        </div>
+        <div style="background:#0F172A; padding:12px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <div style="font-weight:700; color:#F59E0B;">Vosk Hindi Small (Offline Native Devanagari)</div>
+            <div style="color:#94A3B8; font-size:13px;">42 MB &bull; Fast Kaldi acoustic model for pure Hindi</div>
+          </div>
+          <a href="https://alphacephei.com/vosk/models/vosk-model-small-hi-0.22.zip" target="_blank" class="btn" style="padding:6px 14px; font-size:13px;">Download (42MB)</a>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <h3>SDK Integration Guide</h3>
       <p style="color:var(--text-muted);font-size:14px;">Drop <code>implementation project(":dictation-sdk")</code> into any Android app:</p>
@@ -237,14 +283,15 @@ dictationClient.stopListening()</code></pre>
 
 const server = http.createServer((req, res) => {
   if (req.url === '/app-debug.apk') {
-    if (fs.existsSync(APK_PATH)) {
-      const stat = fs.statSync(APK_PATH);
+    const apkPath = getApkPath();
+    if (apkPath) {
+      const stat = fs.statSync(apkPath);
       res.writeHead(200, {
         'Content-Type': 'application/vnd.android.package-archive',
         'Content-Length': stat.size,
         'Content-Disposition': 'attachment; filename="voxis-debug.apk"'
       });
-      const readStream = fs.createReadStream(APK_PATH);
+      const readStream = fs.createReadStream(apkPath);
       readStream.pipe(res);
       return;
     } else {

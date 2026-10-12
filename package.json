@@ -4,6 +4,7 @@
   "description": "Voxis - Offline Dictation & De-Googled STT App & SDK",
   "main": "server.js",
   "scripts": {
+    "dev": "node server.js",
     "start": "node server.js",
     "build": "node -e 'console.log(\"Build complete\")'"
   }

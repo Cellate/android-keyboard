@@ -36,6 +36,9 @@ class DictationClient private constructor(
     private var sessionJob: Job? = null
     private var speechRecognizer: SpeechRecognizer? = null
 
+    var currentModel: SpeechModel = options.model
+        private set
+
     private val audioStreamer = AudioRecordStreamer()
     private val audioRouteManager = AudioRouteManager(context)
     private val vad = VoiceActivityDetector(silenceThresholdMs = options.silenceTimeoutMs)
@@ -43,10 +46,18 @@ class DictationClient private constructor(
         autoPunctuate = options.autoPunctuate,
         autoCapitalize = options.autoCapitalize
     )
-    private val inferenceEngine = WhisperInferenceEngine(
+    private var inferenceEngine = WhisperInferenceEngine(
         model = options.model,
         formatter = textFormatter
     )
+
+    fun updateModel(model: SpeechModel) {
+        currentModel = model
+        inferenceEngine = WhisperInferenceEngine(
+            model = model,
+            formatter = textFormatter
+        )
+    }
 
     private val _state = MutableStateFlow<DictationState>(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
@@ -138,11 +149,22 @@ class DictationClient private constructor(
         try {
             if (SpeechRecognizer.isRecognitionAvailable(context)) {
                 speechRecognizer?.destroy()
+                val primaryLang = when (currentModel.languageCode) {
+                    "hi-en" -> "en-IN"
+                    "hi" -> "hi-IN"
+                    else -> "en-US"
+                }
+
                 val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, primaryLang)
+                    putExtra("android.speech.extra.LANGUAGE", primaryLang)
+                    if (currentModel.languageCode == "hi-en") {
+                        putExtra("android.speech.extra.SECONDARY_LANGUAGE", "hi-IN")
+                    }
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
                 }
 

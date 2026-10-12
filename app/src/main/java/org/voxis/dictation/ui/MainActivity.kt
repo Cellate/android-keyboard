@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -37,10 +38,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import org.voxis.dictation.client.DictationClient
 import org.voxis.dictation.client.DictationListener
 import org.voxis.dictation.client.DictationState
+import org.voxis.dictation.engine.ModelManager
 import org.voxis.dictation.engine.SpeechModel
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -49,8 +54,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val activeModel = ModelManager.getActiveModel(this)
+
         dictationClient = DictationClient.builder(this)
-            .setModel(SpeechModel.TinyEnglish)
+            .setModel(activeModel)
             .setContinuousMode(true)
             .setAutoPunctuate(true)
             .setAutoCapitalize(true)
@@ -177,10 +184,13 @@ fun VoxisApp(client: DictationClient) {
                 .padding(padding)
         ) {
             when (selectedTab) {
-                NavTab.STUDIO -> StudioScreen(client, hasMicPermission) {
-                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                }
-                NavTab.MODELS -> ModelsScreen()
+                NavTab.STUDIO -> StudioScreen(
+                    client = client,
+                    hasMicPermission = hasMicPermission,
+                    onRequestPermission = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                    onNavigateToModels = { selectedTab = NavTab.MODELS }
+                )
+                NavTab.MODELS -> ModelsScreen(client = client)
                 NavTab.SYSTEM -> SystemSetupScreen()
                 NavTab.SDK -> SdkPlaygroundScreen()
             }
@@ -192,16 +202,19 @@ fun VoxisApp(client: DictationClient) {
 fun StudioScreen(
     client: DictationClient,
     hasMicPermission: Boolean,
-    onRequestPermission: () -> Unit
+    onRequestPermission: () -> Unit,
+    onNavigateToModels: () -> Unit
 ) {
     val context = LocalContext.current
     val state by client.state.collectAsState()
     val audioLevel by client.audioLevels.collectAsState()
     var transcriptText by remember { mutableStateOf("") }
 
+    val activeModel = client.currentModel
+    val isModelDownloaded = activeModel.isDownloaded()
+
     val isListening = state is DictationState.Listening || state is DictationState.Transcribing
 
-    // Update transcript reactively from state changes
     LaunchedEffect(state) {
         when (val s = state) {
             is DictationState.Transcribing -> {
@@ -218,7 +231,6 @@ fun StudioScreen(
         }
     }
 
-    // Also collect from transcription stream
     LaunchedEffect(client) {
         client.transcriptions.collect { result ->
             if (result.text.isNotBlank()) {
@@ -253,71 +265,164 @@ fun StudioScreen(
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Status Bar
+        // Active Model & Status Bar
         Card(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onNavigateToModels() },
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
             shape = RoundedCornerShape(12.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    val statusDotColor by animateColorAsState(
-                        targetValue = if (isListening) Color(0xFF10B981) else Color(0xFF64748B)
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(statusDotColor)
-                    )
-                    Spacer(Modifier.width(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val statusDotColor by animateColorAsState(
+                            targetValue = if (isListening) Color(0xFF10B981) else Color(0xFF64748B)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(statusDotColor)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = when (state) {
+                                is DictationState.Idle -> "READY"
+                                is DictationState.Preparing -> "PREPARING..."
+                                is DictationState.Listening -> "LISTENING..."
+                                is DictationState.Transcribing -> "TRANSCRIBING..."
+                                is DictationState.Complete -> "COMPLETE"
+                                is DictationState.Error -> "ERROR"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
                     Text(
-                        text = when (state) {
-                            is DictationState.Idle -> "READY"
-                            is DictationState.Preparing -> "PREPARING..."
-                            is DictationState.Listening -> "LISTENING..."
-                            is DictationState.Transcribing -> "TRANSCRIBING..."
-                            is DictationState.Complete -> "COMPLETE"
-                            is DictationState.Error -> "ERROR"
-                        },
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        text = "100% OFFLINE (AOSP)",
+                        fontSize = 10.sp,
+                        color = Color(0xFF94A3B8),
+                        fontFamily = FontFamily.Monospace
                     )
                 }
-                Text(
-                    text = "100% OFFLINE (AOSP)",
-                    fontSize = 11.sp,
-                    color = Color(0xFF94A3B8),
-                    fontFamily = FontFamily.Monospace
-                )
+
+                Spacer(Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "MODEL: ",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF64748B)
+                        )
+                        Text(
+                            text = activeModel.displayName,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF10B981)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "[${activeModel.language}]",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+
+                    Text(
+                        text = if (isModelDownloaded) "● LOADED" else "⚠️ NOT DOWNLOADED",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isModelDownloaded) Color(0xFF10B981) else Color(0xFFF59E0B)
+                    )
+                }
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        // Warning banner if model file not yet downloaded
+        if (!isModelDownloaded) {
+            Spacer(Modifier.height(8.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigateToModels() },
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2D2012)),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    width = 1.dp,
+                    brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFF59E0B))
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Warning",
+                        tint = Color(0xFFF59E0B),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Model file not downloaded yet",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFCD34D)
+                        )
+                        Text(
+                            text = "Tap to download Hinglish/English/Hindi model weights or import from storage.",
+                            fontSize = 11.sp,
+                            color = Color(0xFFFDE68A)
+                        )
+                    }
+                    Text(
+                        text = "GET →",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFCD34D)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
 
         // Live Audio Waveform Bars
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31)),
-            shape = RoundedCornerShape(16.dp)
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .height(42.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -327,7 +432,7 @@ fun StudioScreen(
                             ((audioLevel * ((i % 5 + 1) / 5f)).coerceIn(0.08f, 1f))
                         } else 0.05f
 
-                        val barHeight by animateFloatAsState(targetValue = 48.dp.value * factor)
+                        val barHeight by animateFloatAsState(targetValue = 42.dp.value * factor)
 
                         Box(
                             modifier = Modifier
@@ -343,7 +448,7 @@ fun StudioScreen(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
 
         // Main Transcription Canvas
         Card(
@@ -388,14 +493,14 @@ fun StudioScreen(
                     if (transcriptText.isBlank()) {
                         Column {
                             Text(
-                                text = "Tap the microphone below to begin offline speech dictation...",
-                                color = Color(0xFF64748B),
+                                text = if (isListening) "Listening... speak into your microphone..." else "Tap the microphone below to begin speech dictation...",
+                                color = if (isListening) Color(0xFF10B981) else Color(0xFF64748B),
                                 fontSize = 16.sp,
                                 lineHeight = 24.sp
                             )
                             Spacer(Modifier.height(12.dp))
                             Text(
-                                text = "You can speak naturally. Spoken punctuation ('period', 'comma', 'question mark') and sentence capitalization are formatted automatically.",
+                                text = "Active Mode: ${activeModel.language}. Words spoken will be recognized directly and rendered in real time.",
                                 color = Color(0xFF475569),
                                 fontSize = 13.sp
                             )
@@ -416,21 +521,33 @@ fun StudioScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Test Speech Injection button for instant emulator testing
+                    // Test speech injection clearly labeled for simulated testing
                     TextButton(
                         onClick = {
-                            val samplePhrases = listOf(
-                                "Hello, this is Voxis offline speech recognition running on device.",
-                                "Dictation test with automatic punctuation, comma, and capitalization.",
-                                "Completely de-googled voice typing with zero cloud dependencies period."
-                            )
+                            val samplePhrases = when (activeModel.languageCode) {
+                                "hi-en" -> listOf(
+                                    "Haan bhai, kal meeting schedule kar do at 10 AM.",
+                                    "Yeh offline voice dictation bahut smoothly kaam kar raha hai.",
+                                    "Please check karo and mujhe update do, thank you."
+                                )
+                                "hi" -> listOf(
+                                    "नमस्ते, यह एक ऑफ़लाइन डिक्टेशन परीक्षण है।",
+                                    "ध्वनि पहचान बिना इंटरनेट के सुचारू रूप से कार्य कर रही है।",
+                                    "कृपया इस संदेश को सुरक्षित रखें।"
+                                )
+                                else -> listOf(
+                                    "Hello, this is Voxis offline speech recognition.",
+                                    "Offline voice typing with zero cloud dependencies.",
+                                    "Real time speech to text transcription on device."
+                                )
+                            }
                             val phrase = samplePhrases.random()
                             client.injectTranscribedText(phrase)
                         }
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Test Speech", tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Test Sample", tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Test Speech", fontSize = 12.sp, color = Color(0xFF10B981))
+                        Text("Sample Injection (Test)", fontSize = 11.sp, color = Color(0xFF10B981))
                     }
 
                     Row {
@@ -516,10 +633,115 @@ fun StudioScreen(
 }
 
 @Composable
-fun ModelsScreen() {
-    val models = remember { SpeechModel.ALL }
-    var activeModelId by remember { mutableStateOf(SpeechModel.TinyEnglish.id) }
+fun ModelsScreen(client: DictationClient) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var availableModels by remember { mutableStateOf(ModelManager.getAvailableModels(context)) }
+    var activeModel by remember { mutableStateOf(client.currentModel) }
+    var selectedFilter by remember { mutableStateOf("ALL") }
+
+    // Download state tracking
+    var downloadingModelId by remember { mutableStateOf<String?>(null) }
+    var downloadProgress by remember { mutableStateOf(0f) }
+    var downloadBytesText by remember { mutableStateOf("") }
+    var currentDownloadJob by remember { mutableStateOf<Job?>(null) }
+
+    // Import Dialog state
+    var showImportDialog by remember { mutableStateOf(false) }
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
+    var importLanguage by remember { mutableStateOf("Hinglish (Code-Mixed)") }
+
+    fun refreshModels() {
+        availableModels = ModelManager.getAvailableModels(context)
+        activeModel = ModelManager.getActiveModel(context)
+        client.updateModel(activeModel)
+    }
+
+    // SAF Document Picker for local downloaded models
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            pendingImportUri = uri
+            showImportDialog = true
+        }
+    }
+
+    if (showImportDialog && pendingImportUri != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showImportDialog = false
+                pendingImportUri = null
+            },
+            title = { Text("Import Local Model File", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        text = "Select the target language mode for this model:",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 13.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+
+                    listOf("Hinglish (Code-Mixed)", "English", "Hindi (हिन्दी)").forEach { lang ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { importLanguage = lang }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = importLanguage == lang,
+                                onClick = { importLanguage = lang },
+                                colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF10B981))
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(lang, color = Color.White, fontSize = 14.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val uri = pendingImportUri ?: return@Button
+                        showImportDialog = false
+                        coroutineScope.launch {
+                            Toast.makeText(context, "Importing model...", Toast.LENGTH_SHORT).show()
+                            val result = ModelManager.importModelFromUri(
+                                context = context,
+                                uri = uri,
+                                fileNameHint = null,
+                                targetLanguage = importLanguage
+                            )
+                            if (result.isSuccess) {
+                                val imported = result.getOrNull()
+                                Toast.makeText(context, "Imported ${imported?.displayName} successfully!", Toast.LENGTH_LONG).show()
+                                refreshModels()
+                            } else {
+                                Toast.makeText(context, "Import failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                            }
+                            pendingImportUri = null
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+                ) {
+                    Text("Import & Set Active", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showImportDialog = false
+                    pendingImportUri = null
+                }) {
+                    Text("Cancel", color = Color(0xFF94A3B8))
+                }
+            },
+            containerColor = Color(0xFF1E293B)
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -528,49 +750,153 @@ fun ModelsScreen() {
             .verticalScroll(rememberScrollState())
     ) {
         Text(
-            text = "Offline Whisper Models",
+            text = "Speech Models & Weights",
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White
         )
         Text(
-            text = "Quantized on-device speech models running locally on CPU/NNAPI without Google Play Services.",
+            text = "Download or import local offline models for Hinglish (code-mixed), English, and Hindi.",
             fontSize = 13.sp,
             color = Color(0xFF94A3B8),
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
         )
 
-        models.forEach { model ->
-            val isCurrent = model.id == activeModelId
+        // Storage Picker Card
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    documentPickerLauncher.launch(arrayOf("*/*"))
+                },
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31)),
+            border = CardDefaults.outlinedCardBorder().copy(
+                width = 1.dp,
+                brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF3B82F6))
+            ),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1E3A8A)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.FileOpen,
+                        contentDescription = "Import",
+                        tint = Color(0xFF60A5FA),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Import Model from Phone Storage",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Select any local .bin, .gguf, .onnx, or .zip model file on your phone.",
+                        fontSize = 11.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+                }
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = "Open",
+                    tint = Color(0xFF60A5FA)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Language Filter Chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("ALL" to "All", "HINGLISH" to "Hinglish", "ENGLISH" to "English", "HINDI" to "Hindi").forEach { (filterKey, label) ->
+                val isSelected = selectedFilter == filterKey
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { selectedFilter = filterKey },
+                    label = { Text(label, fontSize = 12.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF10B981),
+                        selectedLabelColor = Color.Black,
+                        containerColor = Color(0xFF1E293B),
+                        labelColor = Color(0xFF94A3B8)
+                    )
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // Filter models
+        val filteredModels = availableModels.filter { model ->
+            when (selectedFilter) {
+                "HINGLISH" -> model.language.contains("Hinglish", ignoreCase = true)
+                "ENGLISH" -> model.language.equals("English", ignoreCase = true)
+                "HINDI" -> model.language.contains("Hindi", ignoreCase = true)
+                else -> true
+            }
+        }
+
+        filteredModels.forEach { model ->
+            val isCurrent = model.id == activeModel.id
+            val isDownloaded = model.isDownloaded()
+            val isDownloading = downloadingModelId == model.id
+
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 6.dp)
-                    .clickable {
-                        activeModelId = model.id
-                        Toast.makeText(context, "${model.displayName} selected", Toast.LENGTH_SHORT).show()
-                    },
+                    .padding(vertical = 6.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = if (isCurrent) Color(0xFF1E293B) else Color(0xFF151E2E)
                 ),
-                border = if (isCurrent) CardDefaults.outlinedCardBorder().copy(width = 1.dp, brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF10B981))) else null,
+                border = if (isCurrent) CardDefaults.outlinedCardBorder().copy(
+                    width = 1.dp,
+                    brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF10B981))
+                ) else null,
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
+                    // Header Row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = model.displayName,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                            fontSize = 16.sp
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = model.displayName,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 15.sp
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = model.language,
+                                color = Color(0xFF10B981),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
                         Text(
                             text = "${model.approximateSizeMb} MB",
-                            color = Color(0xFF10B981),
+                            color = Color(0xFFE2E8F0),
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
@@ -581,33 +907,186 @@ fun ModelsScreen() {
                     Text(
                         text = model.description,
                         color = Color(0xFF94A3B8),
-                        fontSize = 13.sp
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
                     )
 
+                    if (isDownloaded && !model.localPath.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Path: ${File(model.localPath!!).name}",
+                            color = Color(0xFF64748B),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+
+                    // Progress bar if downloading
+                    if (isDownloading) {
+                        Spacer(Modifier.height(10.dp))
+                        Column {
+                            LinearProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = Color(0xFF10B981),
+                                trackColor = Color(0xFF334155)
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Downloading: ${(downloadProgress * 100).toInt()}%",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF10B981)
+                                )
+                                Text(
+                                    text = downloadBytesText,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF94A3B8),
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(Modifier.height(12.dp))
+
+                    // Buttons Row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = if (isCurrent) "ACTIVE ENGINE" else if (model.isBundled) "INSTALLED" else "AVAILABLE",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isCurrent) Color(0xFF10B981) else Color(0xFF64748B)
-                        )
+                        if (isDownloaded) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Button(
+                                    onClick = {
+                                        ModelManager.setActiveModel(context, model.id)
+                                        refreshModels()
+                                        Toast.makeText(context, "${model.displayName} activated", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (isCurrent) Color(0xFF10B981) else Color(0xFF334155)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (isCurrent) "✓ Active Model" else "Set Active",
+                                        fontSize = 12.sp,
+                                        color = Color.White
+                                    )
+                                }
 
-                        Button(
-                            onClick = {
-                                activeModelId = model.id
-                                Toast.makeText(context, "${model.displayName} selected", Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isCurrent) Color(0xFF10B981) else Color(0xFF334155)
-                            ),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(if (isCurrent) "Selected" else "Select", fontSize = 12.sp, color = Color.White)
+                                Spacer(Modifier.width(8.dp))
+
+                                IconButton(
+                                    onClick = {
+                                        ModelManager.deleteModel(context, model)
+                                        refreshModels()
+                                        Toast.makeText(context, "Deleted ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete Model",
+                                        tint = Color(0xFFEF4444)
+                                    )
+                                }
+                            }
+                        } else if (isDownloading) {
+                            Button(
+                                onClick = {
+                                    currentDownloadJob?.cancel()
+                                    downloadingModelId = null
+                                    Toast.makeText(context, "Download cancelled", Toast.LENGTH_SHORT).show()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Cancel", fontSize = 12.sp, color = Color.White)
+                            }
+                        } else {
+                            // Model NOT downloaded: show in-app download, copy link, and open browser
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Button(
+                                    onClick = {
+                                        if (downloadingModelId != null) {
+                                            Toast.makeText(context, "Another download is in progress", Toast.LENGTH_SHORT).show()
+                                            return@Button
+                                        }
+                                        downloadingModelId = model.id
+                                        downloadProgress = 0f
+                                        downloadBytesText = "Connecting..."
+
+                                        currentDownloadJob = coroutineScope.launch {
+                                            val result = ModelManager.downloadModel(
+                                                context = context,
+                                                model = model,
+                                                onProgress = { progress, downloaded, total ->
+                                                    downloadProgress = progress
+                                                    val downMb = (downloaded.toDouble() / (1024 * 1024)).let { "%.1f".format(it) }
+                                                    val totMb = (total.toDouble() / (1024 * 1024)).let { "%.1f".format(it) }
+                                                    downloadBytesText = "$downMb / $totMb MB"
+                                                }
+                                            )
+                                            downloadingModelId = null
+                                            if (result.isSuccess) {
+                                                Toast.makeText(context, "Downloaded ${model.displayName} successfully!", Toast.LENGTH_LONG).show()
+                                                ModelManager.setActiveModel(context, model.id)
+                                                refreshModels()
+                                            } else {
+                                                Toast.makeText(context, "Download failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Download, contentDescription = "Download", modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Download", fontSize = 12.sp, color = Color.White)
+                                }
+
+                                Row {
+                                    if (model.downloadUrl.isNotBlank()) {
+                                        IconButton(
+                                            onClick = {
+                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                clipboard.setPrimaryClip(ClipData.newPlainText("Model URL", model.downloadUrl))
+                                                Toast.makeText(context, "Download link copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Link,
+                                                contentDescription = "Copy Link",
+                                                tint = Color(0xFF94A3B8)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = {
+                                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(model.downloadUrl))
+                                                context.startActivity(intent)
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.OpenInBrowser,
+                                                contentDescription = "Open in Browser",
+                                                tint = Color(0xFF94A3B8)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -676,7 +1155,7 @@ fun SystemSetupScreen() {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "• Service: org.voxis.dictation.service.VoxisRecognitionService\n• Permission: android.permission.BIND_RECOGNITION_SERVICE\n• Offline Guarantee: Zero network calls, zero GMS telemetry",
+                    text = "• Service: org.voxis.dictation.service.VoxisRecognitionService\n• Permission: android.permission.BIND_RECOGNITION_SERVICE\n• Offline Guarantee: Zero network calls during dictation, 100% on-device speech processing",
                     color = Color.White,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace
@@ -689,9 +1168,10 @@ fun SystemSetupScreen() {
 @Composable
 fun SdkPlaygroundScreen() {
     val sampleCode = """
-// 1. Build Client in any Android App
+// 1. Build Client in any Android App with Active Model
+val activeModel = ModelManager.getActiveModel(context)
 val dictationClient = DictationClient.builder(context)
-    .setModel(SpeechModel.TinyEnglish)
+    .setModel(activeModel)
     .setContinuousMode(true)
     .setAutoPunctuate(true)
     .build()
