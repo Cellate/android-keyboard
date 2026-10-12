@@ -48,6 +48,10 @@ class AudioRecorderManager {
     private val _audioChunkFlow = MutableSharedFlow<FloatArray>(extraBufferCapacity = 16)
     val audioChunkFlow: SharedFlow<FloatArray> = _audioChunkFlow.asSharedFlow()
 
+    // Real-time 100ms frame flow (audioFloats, isVoiceActive) for near-zero latency streaming
+    private val _frameFlow = MutableSharedFlow<Pair<FloatArray, Boolean>>(extraBufferCapacity = 32)
+    val frameFlow: SharedFlow<Pair<FloatArray, Boolean>> = _frameFlow.asSharedFlow()
+
     // Real-time audio RMS level [0.0 .. 1.0] for UI visualizer
     private val _audioLevel = MutableStateFlow(0f)
     val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
@@ -134,6 +138,9 @@ class AudioRecorderManager {
                         lastVoiceActivityTimeMs = now
                         speechDetectedInSession = true
                     }
+
+                    // Emit 100ms frame immediately for real-time streaming engines
+                    _frameFlow.emit(Pair(normalizedFloats, isVoice))
 
                     // 3. Accumulate samples with chunking threshold logic
                     var chunkToEmit: FloatArray? = null

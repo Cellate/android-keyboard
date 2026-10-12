@@ -448,7 +448,40 @@ fun StudioScreen(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
+
+        // Hinglish Real-Time Latency Mode Selector
+        var selectedHinglishMode by remember { mutableStateOf("HYBRID") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                "HYBRID" to "⚡ Hybrid (Real-Time)",
+                "STREAMING" to "⚡ Fast Stream (<100ms)",
+                "VAD" to "🎯 Whisper VAD"
+            ).forEach { (modeKey, label) ->
+                val isSelected = selectedHinglishMode == modeKey
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (isSelected) Color(0xFF10B981) else Color(0xFF1E293B),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { selectedHinglishMode = modeKey }
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) Color.Black else Color(0xFF94A3B8),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 2.dp)
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
 
         // Main Transcription Canvas
         Card(

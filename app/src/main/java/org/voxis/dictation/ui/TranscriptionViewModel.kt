@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.voxis.dictation.audio.AudioRecorderManager
+import org.voxis.dictation.engine.HinglishEngineMode
 import org.voxis.dictation.engine.HinglishPromptConfig
+import org.voxis.dictation.engine.HybridHinglishEngine
 import org.voxis.dictation.engine.ModelManager
 import org.voxis.dictation.engine.WhisperNativeEngine
 import java.io.File
@@ -24,14 +26,18 @@ data class TranscriptionUiState(
     val isRecording: Boolean = false,
     val isModelLoaded: Boolean = false,
     val liveTranscript: String = "",
+    val interimStreamingText: String = "",
     val audioLevel: Float = 0f,
     val activeModelName: String = "No Model",
+    val engineMode: HinglishEngineMode = HinglishEngineMode.HYBRID,
     val statusMessage: String = "Ready"
 )
 
 /**
- * Production ViewModel managing the complete on-device transcription lifecycle,
- * streaming audio chunks into whisper.cpp JNI without UI jank or ANRs.
+ * Production ViewModel managing the complete on-device transcription lifecycle.
+ * Coordinates both:
+ * 1. Low-latency streaming word emission (<100ms) for immediate visual feedback.
+ * 2. FUTO-style VAD-endpointed Whisper for full conversational Hinglish Latin punctuation.
  */
 class TranscriptionViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -41,6 +47,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
 
     private val audioRecorderManager = AudioRecorderManager()
     private val whisperEngine = WhisperNativeEngine()
+    private val hybridHinglishEngine = HybridHinglishEngine(whisperEngine)
 
     private val _uiState = MutableStateFlow(TranscriptionUiState())
     val uiState: StateFlow<TranscriptionUiState> = _uiState.asStateFlow()
@@ -55,6 +62,9 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         )
 
     init {
+        // Attach hybrid orchestrator coroutine listeners
+        hybridHinglishEngine.attach(viewModelScope)
+
         // Collect real-time audio levels for UI waveforms
         viewModelScope.launch {
             audioRecorderManager.audioLevel.collect { level ->
@@ -62,10 +72,26 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
             }
         }
 
-        // Collect and process chunked audio buffers through whisper.cpp inference
+        // Collect hybrid engine text state and propagate to UI
         viewModelScope.launch {
-            audioRecorderManager.audioChunkFlow.collect { audioFloats ->
-                processAudioChunk(audioFloats)
+            hybridHinglishEngine.state.collect { hybridState ->
+                _uiState.update { current ->
+                    current.copy(
+                        liveTranscript = hybridState.liveText,
+                        interimStreamingText = hybridState.interimWordText,
+                        engineMode = hybridState.currentMode,
+                        statusMessage = if (current.isRecording) {
+                            if (hybridState.isSpeaking) "Speaking..." else "Listening..."
+                        } else current.statusMessage
+                    )
+                }
+            }
+        }
+
+        // Ingest 100ms audio frames into hybrid engine in real time
+        viewModelScope.launch {
+            audioRecorderManager.frameFlow.collect { (frameSamples, isVoice) ->
+                hybridHinglishEngine.processFrame(frameSamples, isVoice, viewModelScope)
             }
         }
 
@@ -123,7 +149,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update {
             it.copy(
                 isModelLoaded = whisperEngine.isModelLoaded,
-                activeModelName = if (whisperEngine.isModelLoaded) activeModel.displayName else "None (Download in Models tab)",
+                activeModelName = if (whisperEngine.isModelLoaded) activeModel.displayName else "None (Select in Models tab)",
                 statusMessage = if (whisperEngine.isModelLoaded) "Model Ready" else "No model file found"
             )
         }
@@ -152,57 +178,30 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
     fun stopTranscription() {
         if (!_uiState.value.isRecording) return
 
-        val remainingAudio = audioRecorderManager.stopRecording()
+        audioRecorderManager.stopRecording()
+        hybridHinglishEngine.onRecordingStopped(viewModelScope)
+
         _uiState.update {
             it.copy(
                 isRecording = false,
                 statusMessage = "Complete"
             )
         }
-
-        // Process final remaining audio buffer
-        remainingAudio?.let { chunk ->
-            viewModelScope.launch {
-                processAudioChunk(chunk)
-            }
-        }
     }
 
-    private suspend fun processAudioChunk(audioFloats: FloatArray) = withContext(Dispatchers.Default) {
-        if (audioFloats.isEmpty()) return@withContext
-
-        _uiState.update { it.copy(statusMessage = "Transcribing...") }
-
-        // Execute inference on dedicated native thread with Hinglish steering parameters
-        val recognizedText = whisperEngine.transcribe(
-            audioSamples = audioFloats,
-            prompt = HinglishPromptConfig.DEFAULT_HINGLISH_PROMPT,
-            language = HinglishPromptConfig.DEFAULT_LANGUAGE,
-            translate = HinglishPromptConfig.DEFAULT_TRANSLATE,
-            nThreads = HinglishPromptConfig.RECOMMENDED_THREADS
-        ).trim()
-
-        if (recognizedText.isNotBlank()) {
-            _uiState.update { current ->
-                val updatedTranscript = if (current.liveTranscript.isBlank()) {
-                    recognizedText
-                } else {
-                    "${current.liveTranscript} $recognizedText"
-                }
-                current.copy(
-                    liveTranscript = updatedTranscript,
-                    statusMessage = if (current.isRecording) "Listening..." else "Complete"
-                )
-            }
-        } else {
-            _uiState.update { current ->
-                current.copy(statusMessage = if (current.isRecording) "Listening..." else "Ready")
-            }
-        }
+    fun setEngineMode(mode: HinglishEngineMode) {
+        hybridHinglishEngine.setMode(mode)
+        _uiState.update { it.copy(engineMode = mode) }
     }
 
     fun clearTranscript() {
-        _uiState.update { it.copy(liveTranscript = "") }
+        hybridHinglishEngine.clear()
+        _uiState.update {
+            it.copy(
+                liveTranscript = "",
+                interimStreamingText = ""
+            )
+        }
     }
 
     override fun onCleared() {

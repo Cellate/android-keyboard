@@ -120,10 +120,14 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
   * Added `HinglishPromptConfig.kt` with custom prompt conditioning (`initial_prompt = "Hinglish speech transcription, conversational tone, Latin script with punctuation: yaar, theek hai, kya scene hai, kaise ho."`, `language = "hi"`, `translate = false`).
   * Created `TranscriptionViewModel.kt` with coroutine offloading (`Dispatchers.Default` inference, `Dispatchers.IO` file I/O) and `StateFlow<String>` live transcript flow.
 
-- Version 1.3.0:
-  * Offloaded Android Gradle build pipeline, APK assembly, and artifact archiving to GitHub Actions.
-  * Added `.github/workflows/build-apk.yml` with automated APK build, Gradle caching, artifact upload (30-day retention), and GitHub Releases on tags.
-  * Added `.github/workflows/ci.yml` for automated linting and unit testing on PRs and commits.
-  * Established strict token efficiency mandate: reserved AI model tokens for systems coding and architecture rather than redundant build execution.
+- Version 1.4.0:
+  * Implemented Dual-Engine Real-Time Hinglish Architecture:
+    1. Option 1: `StreamingAcousticEngine.kt` for instant word-by-word streaming (<100ms latency) as speech is spoken.
+    2. Option 2: `VadEndpointedWhisperEngine.kt` with FUTO-style natural pause endpointing (280ms silence trigger) eliminating Whisper's continuous re-encoding lag.
+    3. `HybridHinglishEngine.kt` combining both: displays immediate words on screen while speaking, then finalizes with full Hinglish punctuation on natural pauses.
+  * Added 3 selectable modes in UI: Hybrid (Real-Time + Whisper), Fast Streaming (<100ms), and Whisper VAD.
+  * Updated `AudioRecorderManager.kt` with continuous 100ms `frameFlow`.
+  * Updated `TranscriptionViewModel.kt` with state-managed hybrid transcription streaming.
 ================================================================================
+
 
