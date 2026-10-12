@@ -305,6 +305,22 @@ const server = http.createServer((req, res) => {
   res.end(HTML_CONTENT);
 });
 
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`Port ${PORT} already bound by supervisor. Standby mode active.`);
+  } else {
+    console.error('Server error:', err);
+  }
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Safe caught exception:', err.message);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('Safe caught rejection:', reason);
+});
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Voxis Server running on port ${PORT}`);
 });

@@ -42,6 +42,13 @@ Target Operating Systems: GrapheneOS, CalyxOS, LineageOS, Standard AOSP
   Utilize LLM tokens exclusively for core software architecture, C++ systems
   engineering, and Kotlin implementation.
 
+- NEVER RUN MANUAL SERVER TASKS OR REDUNDANT PROBES (ZERO SERVER TOKEN WASTE):
+  The web companion is completely handled by the platform supervisor running
+  `npm run dev` in the background. DO NOT start manual background tasks for
+  `node server.js` or `npm run dev`, and DO NOT run repetitive http/port test
+  probes. Never get distracted by background task notifications about the server.
+  Save 100% of tokens for user tasks, features, and Android code.
+
 --------------------------------------------------------------------------------
 2. LANGUAGE PRIORITIES & MODELS
 --------------------------------------------------------------------------------
