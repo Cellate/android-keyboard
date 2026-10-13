@@ -147,15 +147,22 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
       and exact model inference latency (ms).
   * ADDED USER-EDITABLE VOICE MODEL & AUDIO PARAMETERS:
     - CPU Inference Threads (1 to 8, with 4 Recommended).
-    - VAD Silence Endpoint Pause (150ms to 800ms, with 280ms Recommended).
-    - Language / Dialect: Hinglish (Code-Mixed), English, Hindi.
-    - Initial Prompt Conditioning text field.
-    - Auto-Punctuation & Auto-Capitalization switches.
-    - One-tap "Reset to Recommended Defaults" button.
-  * RECONFIRMED WEB RUNTIME GOVERNANCE:
-    - Web companion (server.js) is strictly a lightweight representation UI.
-    - 100% of functional engineering is reserved for native Android and :dictation-sdk.
+- Version 1.6.0:
+  * COMPLETE ELIMINATION OF FILLER / SIMULATED VOCABULARY:
+    - Purged all simulated word lookups and pseudo-lexicons from StreamingAcousticEngine
+      and WhisperInferenceEngine. Strict compliance with Rule #1 (never re-introduce fake words).
+    - If no model is loaded on device, the app now cleanly displays an explicit warning
+      banner guiding the user to download an offline model in the Models tab.
+  * REAL ON-DEVICE KALDI / VOSK NEURAL SPEECH ENGINE INTEGRATION:
+    - Integrated `com.alphacephei:vosk-android` library for genuine offline neural
+      speech recognition on mobile CPU (arm64-v8a, armeabi-v7a, x86_64).
+    - Created `VoskEngine.kt` supporting continuous streaming recognition via
+      `acceptWaveForm()` / `partialResult` and full batch recognition via `finalResult`.
+    - Added automated `.zip` model decompression to `ModelManager.kt` for seamless
+      one-tap downloading and unpacking of offline models (Vosk Hindi 42MB, Vosk English 40MB).
+    - Supported dual-engine arbitration: real Vosk neural recognition + Whisper GGML.
 ================================================================================
+
 
 
 

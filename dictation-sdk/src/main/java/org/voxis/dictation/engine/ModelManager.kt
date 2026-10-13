@@ -3,17 +3,21 @@ package org.voxis.dictation.engine
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.zip.ZipInputStream
 
 object ModelManager {
 
+    private const val TAG = "ModelManager"
     private const val PREFS_NAME = "voxis_model_prefs"
     private const val KEY_ACTIVE_MODEL_ID = "active_model_id"
     private const val KEY_CUSTOM_MODELS = "custom_models_json"
@@ -30,7 +34,10 @@ object ModelManager {
         val modelsDir = getModelsDir(context)
         val predefined = SpeechModel.ALL_PREDEFINED.map { model ->
             val localFile = File(modelsDir, model.fileName)
-            if (localFile.exists() && localFile.length() > 500 * 1024) {
+            val unzippedDir = File(modelsDir, model.fileName.substringBeforeLast("."))
+            if (unzippedDir.exists() && unzippedDir.isDirectory) {
+                model.copy(localPath = unzippedDir.absolutePath)
+            } else if (localFile.exists() && localFile.length() > 500 * 1024) {
                 model.copy(localPath = localFile.absolutePath)
             } else {
                 model.copy(localPath = null)
@@ -39,7 +46,10 @@ object ModelManager {
 
         val custom = getCustomModels(context).map { model ->
             val localFile = File(modelsDir, model.fileName)
-            if (localFile.exists() && localFile.length() > 0) {
+            val unzippedDir = File(modelsDir, model.fileName.substringBeforeLast("."))
+            if (unzippedDir.exists() && unzippedDir.isDirectory) {
+                model.copy(localPath = unzippedDir.absolutePath)
+            } else if (localFile.exists() && localFile.length() > 0) {
                 model.copy(localPath = localFile.absolutePath)
             } else {
                 model
@@ -134,9 +144,16 @@ object ModelManager {
                     finalFile.delete()
                 }
                 if (tempFile.renameTo(finalFile)) {
-                    model.localPath = finalFile.absolutePath
+                    val resolvedFile = if (finalFile.name.endsWith(".zip", ignoreCase = true)) {
+                        val unzipped = unzipModelArchive(finalFile, modelsDir)
+                        unzipped ?: finalFile
+                    } else {
+                        finalFile
+                    }
+
+                    model.localPath = resolvedFile.absolutePath
                     onProgress(1f, finalFile.length(), finalFile.length())
-                    Result.success(finalFile)
+                    Result.success(resolvedFile)
                 } else {
                     Result.failure(IllegalStateException("Failed to rename temporary download file"))
                 }
@@ -168,7 +185,6 @@ object ModelManager {
                 }
             }
 
-            // Sanitize filename
             val safeFileName = fileName.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
             val targetFile = File(getModelsDir(context), safeFileName)
 
@@ -178,6 +194,12 @@ object ModelManager {
                     output.flush()
                 }
             } ?: return@withContext Result.failure(IllegalStateException("Cannot open input stream for selected model"))
+
+            val resolvedFile = if (targetFile.name.endsWith(".zip", ignoreCase = true)) {
+                unzipModelArchive(targetFile, getModelsDir(context)) ?: targetFile
+            } else {
+                targetFile
+            }
 
             val sizeMb = (targetFile.length() / (1024 * 1024)).toInt().coerceAtLeast(1)
             val langCode = when {
@@ -197,7 +219,7 @@ object ModelManager {
                 fileName = safeFileName,
                 isBundled = false,
                 isCustom = true,
-                localPath = targetFile.absolutePath
+                localPath = resolvedFile.absolutePath
             )
 
             saveCustomModel(context, customModel)
@@ -209,12 +231,46 @@ object ModelManager {
         }
     }
 
+    fun unzipModelArchive(zipFile: File, destDir: File): File? {
+        try {
+            val baseName = zipFile.name.substringBeforeLast(".")
+            val targetFolder = File(destDir, baseName)
+            if (!targetFolder.exists()) {
+                targetFolder.mkdirs()
+            }
+
+            ZipInputStream(FileInputStream(zipFile)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val cleanName = entry.name.substringAfter("/")
+                    if (cleanName.isNotBlank()) {
+                        val newFile = File(targetFolder, cleanName)
+                        if (entry.isDirectory) {
+                            newFile.mkdirs()
+                        } else {
+                            newFile.parentFile?.mkdirs()
+                            FileOutputStream(newFile).use { fos ->
+                                zis.copyTo(fos)
+                            }
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
+                }
+            }
+            return targetFolder
+        } catch (e: Exception) {
+            Log.e(TAG, "Unzip error: ${e.message}", e)
+            return null
+        }
+    }
+
     fun deleteModel(context: Context, model: SpeechModel): Boolean {
         var deleted = false
         if (!model.localPath.isNullOrBlank()) {
             val file = File(model.localPath!!)
             if (file.exists()) {
-                deleted = file.delete()
+                deleted = if (file.isDirectory) file.deleteRecursively() else file.delete()
             }
         }
 
@@ -241,6 +297,13 @@ object ModelManager {
                 val obj = arr.getJSONObject(i)
                 val fileName = obj.optString("fileName", "model.bin")
                 val localFile = File(getModelsDir(context), fileName)
+                val unzippedDir = File(getModelsDir(context), fileName.substringBeforeLast("."))
+                val resolvedPath = if (unzippedDir.exists() && unzippedDir.isDirectory) {
+                    unzippedDir.absolutePath
+                } else if (localFile.exists()) {
+                    localFile.absolutePath
+                } else null
+
                 list.add(
                     SpeechModel(
                         id = obj.getString("id"),
@@ -253,7 +316,7 @@ object ModelManager {
                         fileName = fileName,
                         isBundled = false,
                         isCustom = true,
-                        localPath = if (localFile.exists()) localFile.absolutePath else null
+                        localPath = resolvedPath
                     )
                 )
             }

@@ -3,6 +3,7 @@ package org.voxis.dictation.engine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.voxis.dictation.audio.AudioChunk
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 interface InferenceEngine {
@@ -19,7 +20,8 @@ interface InferenceEngine {
 
 class WhisperInferenceEngine(
     override val model: SpeechModel = SpeechModel.TinyEnglish,
-    private val formatter: TextStreamFormatter = TextStreamFormatter()
+    private val formatter: TextStreamFormatter = TextStreamFormatter(),
+    private val voskEngine: VoskEngine = VoskEngine()
 ) : InferenceEngine {
 
     private val initialized = AtomicBoolean(false)
@@ -28,7 +30,6 @@ class WhisperInferenceEngine(
     val hasLoadedModel: Boolean get() = model.isDownloaded()
 
     private val sampleBuffer = mutableListOf<Float>()
-    private val acousticEngine = StreamingAcousticEngine()
     private val accumulatedText = StringBuilder()
     private var lastDecodedSegment = ""
     private var repetitionCount = 0
@@ -39,7 +40,14 @@ class WhisperInferenceEngine(
             accumulatedText.clear()
             lastDecodedSegment = ""
             repetitionCount = 0
-            acousticEngine.reset()
+
+            if (model.isDownloaded() && !model.localPath.isNullOrBlank()) {
+                val file = File(model.localPath!!)
+                if (file.isDirectory) {
+                    voskEngine.loadModel(file.absolutePath)
+                }
+            }
+
             initialized.set(true)
             Result.success(Unit)
         } catch (e: Exception) {
@@ -57,16 +65,22 @@ class WhisperInferenceEngine(
         }
 
         val floatChunk = FloatArray(audioChunk.length) { i -> audioChunk.samples[i] / 32768.0f }
-        val decoded = acousticEngine.decodeBatchAudio(floatChunk, VoiceModelConfig(languageCode = model.languageCode))
-        if (decoded.isNotBlank()) {
-            if (accumulatedText.isNotEmpty()) accumulatedText.append(" ")
-            accumulatedText.append(decoded)
-            return@withContext TranscriptionResult(
-                text = accumulatedText.toString(),
-                isFinal = false,
-                confidence = 0.94f,
-                durationMs = (sampleBuffer.size * 1000L) / 16000L
-            )
+
+        if (voskEngine.isModelLoaded) {
+            val (recText, isFinal) = voskEngine.processFrame(floatChunk)
+            if (recText.isNotBlank()) {
+                val combined = if (accumulatedText.isEmpty()) recText else "$accumulatedText $recText"
+                if (isFinal) {
+                    accumulatedText.clear()
+                    accumulatedText.append(combined)
+                }
+                return@withContext TranscriptionResult(
+                    text = combined,
+                    isFinal = isFinal,
+                    confidence = 0.95f,
+                    durationMs = (sampleBuffer.size * 1000L) / 16000L
+                )
+            }
         }
 
         decodeStreamingSamples(isFinal = false)
@@ -75,11 +89,10 @@ class WhisperInferenceEngine(
     override suspend fun finalizeTranscription(): TranscriptionResult? = withContext(Dispatchers.Default) {
         if (!initialized.get()) return@withContext null
 
-        val samplesArray = synchronized(sampleBuffer) { sampleBuffer.toFloatArray() }
-        if (samplesArray.isNotEmpty() && accumulatedText.isBlank()) {
-            val decoded = acousticEngine.decodeBatchAudio(samplesArray, VoiceModelConfig(languageCode = model.languageCode))
-            if (decoded.isNotBlank()) {
-                accumulatedText.append(decoded)
+        if (voskEngine.isModelLoaded && accumulatedText.isBlank()) {
+            val finalVosk = voskEngine.getFinalResult()
+            if (finalVosk.isNotBlank()) {
+                accumulatedText.append(finalVosk)
             }
         }
 
@@ -133,11 +146,12 @@ class WhisperInferenceEngine(
         accumulatedText.clear()
         lastDecodedSegment = ""
         repetitionCount = 0
-        acousticEngine.reset()
+        voskEngine.reset()
     }
 
     override fun release() {
         reset()
+        voskEngine.close()
         initialized.set(false)
     }
 }

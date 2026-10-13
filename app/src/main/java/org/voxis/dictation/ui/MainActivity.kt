@@ -199,7 +199,7 @@ fun VoxisApp(
                     onRequestPermission = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                     onNavigateToModels = { selectedTab = NavTab.MODELS }
                 )
-                NavTab.MODELS -> ModelsScreen(client = client)
+                NavTab.MODELS -> ModelsScreen(client = client, viewModel = viewModel)
                 NavTab.SYSTEM -> SystemSetupScreen()
                 NavTab.SDK -> SdkPlaygroundScreen()
             }
@@ -330,24 +330,74 @@ fun StudioScreen(
                         modifier = Modifier.clickable { onNavigateToModels() }
                     ) {
                         Text(
-                            text = "ENGINE: ",
+                            text = "MODEL: ",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF64748B)
                         )
                         Text(
-                            text = uiState.pipelineMetrics.activeEngineDescription,
+                            text = uiState.activeModelName,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF10B981)
+                            color = if (uiState.isModelLoaded) Color(0xFF10B981) else Color(0xFFF59E0B)
                         )
                     }
 
                     Text(
-                        text = if (uiState.isModelLoaded) "● MODEL LOADED" else "● OFFLINE ENGINE READY",
+                        text = if (uiState.isModelLoaded) "● LOADED" else "⚠️ NO MODEL",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF10B981)
+                        color = if (uiState.isModelLoaded) Color(0xFF10B981) else Color(0xFFF59E0B)
+                    )
+                }
+            }
+        }
+
+        // Warning banner guiding user to download or import an offline model
+        if (!uiState.isModelLoaded) {
+            Spacer(Modifier.height(8.dp))
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onNavigateToModels() },
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2D2012)),
+                border = CardDefaults.outlinedCardBorder().copy(
+                    width = 1.dp,
+                    brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFF59E0B))
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = "Warning",
+                        tint = Color(0xFFF59E0B),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "No Speech Model Loaded",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFCD34D)
+                        )
+                        Text(
+                            text = "Download or import an offline model in Models tab to enable speech recognition.",
+                            fontSize = 11.sp,
+                            color = Color(0xFFFDE68A)
+                        )
+                    }
+                    Text(
+                        text = "GET →",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFCD34D)
                     )
                 }
             }
@@ -983,7 +1033,10 @@ fun VoiceModelConfigDialog(
 }
 
 @Composable
-fun ModelsScreen(client: DictationClient) {
+fun ModelsScreen(
+    client: DictationClient,
+    viewModel: TranscriptionViewModel
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -1006,6 +1059,9 @@ fun ModelsScreen(client: DictationClient) {
         availableModels = ModelManager.getAvailableModels(context)
         activeModel = ModelManager.getActiveModel(context)
         client.updateModel(activeModel)
+        coroutineScope.launch {
+            viewModel.loadActiveModel()
+        }
     }
 
     // SAF Document Picker for local downloaded models

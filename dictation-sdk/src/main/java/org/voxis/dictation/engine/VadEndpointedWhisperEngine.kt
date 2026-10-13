@@ -10,33 +10,41 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Dual-Mode VAD-Endpointed Whisper & Acoustic Engine.
- *
- * Supports both:
- * 1. Mode 1: Batch Record-then-Process execution.
- * 2. Mode 2: Real-time pause-endpointed continuous streaming.
+ * Dual-Mode Speech Inference Engine.
+ * Coordinates Vosk (Kaldi) and Whisper on-device neural speech models.
+ * Strictly executes real neural models on 16kHz PCM audio without canned or simulated words.
  */
 class VadEndpointedWhisperEngine(
     private val whisperEngine: WhisperNativeEngine,
-    private val acousticFallback: StreamingAcousticEngine = StreamingAcousticEngine(),
+    private val voskEngine: VoskEngine,
     private val formatter: TextStreamFormatter = TextStreamFormatter()
 ) {
     companion object {
         private const val TAG = "VadWhisperEngine"
-        private const val MIN_SPEECH_DURATION_MS = 400L
-        private const val MAX_UTTERANCE_DURATION_MS = 15000L
+        private const val MIN_SPEECH_DURATION_MS = 300L
+        private const val MAX_UTTERANCE_DURATION_MS = 25000L
         private const val SAMPLE_RATE = 16000
     }
 
     private val _finalizedSegmentFlow = MutableSharedFlow<TranscriptionResult>(extraBufferCapacity = 32)
     val finalizedSegmentFlow: SharedFlow<TranscriptionResult> = _finalizedSegmentFlow.asSharedFlow()
 
-    private val speechBuffer = ArrayList<Float>(SAMPLE_RATE * 15)
+    private val speechBuffer = ArrayList<Float>(SAMPLE_RATE * 25)
     private val bufferLock = Any()
 
     private var speechStartTimeMs: Long = 0L
     private var lastVoiceActivityTimeMs: Long = 0L
     private var isSpeechActive: Boolean = false
+
+    val isModelLoaded: Boolean
+        get() = voskEngine.isModelLoaded || whisperEngine.isModelLoaded
+
+    val activeEngineName: String
+        get() = when {
+            voskEngine.isModelLoaded -> "Vosk Offline Kaldi Engine"
+            whisperEngine.isModelLoaded -> "Whisper Native Engine"
+            else -> "No Model Loaded (Select in Models tab)"
+        }
 
     fun processAudioFrame(
         frameSamples: FloatArray,
@@ -58,7 +66,6 @@ class VadEndpointedWhisperEngine(
                     speechBuffer.add(s)
                 }
             } else if (isSpeechActive) {
-                // Keep trailing silence buffer up to endpoint duration
                 for (s in frameSamples) {
                     speechBuffer.add(s)
                 }
@@ -127,8 +134,20 @@ class VadEndpointedWhisperEngine(
         val startTime = System.currentTimeMillis()
         var textResult = ""
 
-        // 1. If Whisper model is loaded in memory/JNI, run full GGML inference
-        if (whisperEngine.isModelLoaded) {
+        // 1. If Vosk model is loaded, execute Vosk batch recognition
+        if (voskEngine.isModelLoaded) {
+            try {
+                val voskText = voskEngine.processBatch(audioChunk)
+                if (voskText.isNotBlank()) {
+                    textResult = voskText
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Vosk batch inference exception: ${e.message}")
+            }
+        }
+
+        // 2. If Whisper model is loaded, execute Whisper GGML inference
+        if (textResult.isBlank() && whisperEngine.isModelLoaded) {
             try {
                 val rawWhisper = whisperEngine.transcribe(
                     audioSamples = audioChunk,
@@ -145,24 +164,22 @@ class VadEndpointedWhisperEngine(
             }
         }
 
-        // 2. If no Whisper model loaded or Whisper returned empty, run built-in offline acoustic decoder
-        if (textResult.isBlank()) {
-            textResult = acousticFallback.decodeBatchAudio(audioChunk, config)
-        }
-
         val latencyMs = System.currentTimeMillis() - startTime
         val durationMs = (audioChunk.size * 1000L) / SAMPLE_RATE
 
-        val formatted = formatter.format(textResult)
+        // Format real recognized text
+        val formatted = if (textResult.isNotBlank()) formatter.format(textResult) else ""
 
         val result = TranscriptionResult(
             text = formatted,
             isFinal = true,
-            confidence = if (whisperEngine.isModelLoaded) 0.98f else 0.92f,
+            confidence = if (isModelLoaded) 0.95f else 0f,
             durationMs = durationMs
         )
 
-        _finalizedSegmentFlow.emit(result)
+        if (formatted.isNotBlank()) {
+            _finalizedSegmentFlow.emit(result)
+        }
         result
     }
 
@@ -173,5 +190,6 @@ class VadEndpointedWhisperEngine(
             speechStartTimeMs = 0L
             lastVoiceActivityTimeMs = 0L
         }
+        voskEngine.reset()
     }
 }

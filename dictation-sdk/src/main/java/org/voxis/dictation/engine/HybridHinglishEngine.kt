@@ -19,75 +19,89 @@ data class HybridTranscriptionState(
     val currentMode: HinglishEngineMode = HinglishEngineMode.LIVE_REALTIME,
     val isSpeaking: Boolean = false,
     val lastLatencyMs: Long = 0L,
-    val engineName: String = "Embedded Offline Engine"
+    val engineName: String = "No Model Loaded",
+    val hasModel: Boolean = false
 )
 
 /**
  * Dual-Engine Orchestrator for Conversational Dictation.
- * Seamlessly manages Mode 1 (Record-then-Process) and Mode 2 (Live Real-Time Streaming).
+ * Seamlessly manages Mode 1 (Record-then-Process) and Mode 2 (Live Real-Time Streaming)
+ * utilizing genuine Vosk Kaldi neural ASR and Whisper GGML models.
  */
 class HybridHinglishEngine(
-    private val whisperEngine: WhisperNativeEngine
+    private val whisperEngine: WhisperNativeEngine,
+    val voskEngine: VoskEngine = VoskEngine()
 ) {
-    val streamingAcoustic = StreamingAcousticEngine()
-    val vadWhisper = VadEndpointedWhisperEngine(whisperEngine, streamingAcoustic)
+    val vadWhisper = VadEndpointedWhisperEngine(whisperEngine, voskEngine)
 
     private val _state = MutableStateFlow(HybridTranscriptionState())
     val state: StateFlow<HybridTranscriptionState> = _state.asStateFlow()
 
     fun attach(scope: CoroutineScope) {
-        // Collect instant streaming tokens in live real-time mode
+        // Collect finalized Whisper/Vosk segments on pause endpoints
         scope.launch {
-            streamingAcoustic.partialTokenFlow.collect { interim ->
-                if (_state.value.currentMode == HinglishEngineMode.LIVE_REALTIME) {
+            vadWhisper.finalizedSegmentFlow.collect { result ->
+                if (result.text.isNotBlank()) {
                     _state.update { current ->
-                        val combined = if (current.finalizedText.isBlank()) {
-                            interim
+                        val newFinalized = if (current.finalizedText.isBlank()) {
+                            result.text
                         } else {
-                            "${current.finalizedText} $interim"
+                            "${current.finalizedText} ${result.text}"
                         }
+
                         current.copy(
-                            liveText = combined,
-                            interimWordText = interim
+                            finalizedText = newFinalized,
+                            liveText = newFinalized,
+                            interimWordText = "",
+                            lastLatencyMs = result.durationMs,
+                            engineName = vadWhisper.activeEngineName,
+                            hasModel = vadWhisper.isModelLoaded
                         )
                     }
                 }
             }
         }
-
-        // Collect finalized Whisper/Acoustic segments on pause endpoints
-        scope.launch {
-            vadWhisper.finalizedSegmentFlow.collect { result ->
-                _state.update { current ->
-                    val newFinalized = if (current.finalizedText.isBlank()) {
-                        result.text
-                    } else {
-                        "${current.finalizedText} ${result.text}"
-                    }
-
-                    current.copy(
-                        finalizedText = newFinalized,
-                        liveText = newFinalized,
-                        interimWordText = "",
-                        lastLatencyMs = result.durationMs
-                    )
-                }
-                streamingAcoustic.reset()
-            }
-        }
     }
 
-    suspend fun processFrame(
+    fun processFrame(
         frameSamples: FloatArray,
         isVoiceActive: Boolean,
         coroutineScope: CoroutineScope,
         config: VoiceModelConfig = VoiceModelConfig.getRecommended()
     ) {
-        _state.update { it.copy(isSpeaking = isVoiceActive) }
+        _state.update {
+            it.copy(
+                isSpeaking = isVoiceActive,
+                engineName = vadWhisper.activeEngineName,
+                hasModel = vadWhisper.isModelLoaded
+            )
+        }
 
         if (_state.value.currentMode == HinglishEngineMode.LIVE_REALTIME) {
-            streamingAcoustic.processFrame(frameSamples, isVoiceActive, config)
-            vadWhisper.processAudioFrame(frameSamples, isVoiceActive, coroutineScope, config)
+            // Mode 2: Live streaming speech recognition via Vosk or pause-endpointed Whisper
+            if (voskEngine.isModelLoaded) {
+                val (recognizedText, isFinal) = voskEngine.processFrame(frameSamples)
+                if (recognizedText.isNotBlank()) {
+                    _state.update { current ->
+                        if (isFinal) {
+                            val newFinal = if (current.finalizedText.isBlank()) recognizedText else "${current.finalizedText} $recognizedText"
+                            current.copy(
+                                finalizedText = newFinal,
+                                liveText = newFinal,
+                                interimWordText = ""
+                            )
+                        } else {
+                            val combined = if (current.finalizedText.isBlank()) recognizedText else "${current.finalizedText} $recognizedText"
+                            current.copy(
+                                liveText = combined,
+                                interimWordText = recognizedText
+                            )
+                        }
+                    }
+                }
+            } else {
+                vadWhisper.processAudioFrame(frameSamples, isVoiceActive, coroutineScope, config)
+            }
         }
     }
 
@@ -106,7 +120,8 @@ class HybridHinglishEngine(
                 interimWordText = "",
                 lastLatencyMs = elapsed,
                 isSpeaking = false,
-                engineName = if (whisperEngine.isModelLoaded) "Whisper GGML (${config.nThreads} threads)" else "Embedded Offline Engine"
+                engineName = vadWhisper.activeEngineName,
+                hasModel = vadWhisper.isModelLoaded
             )
         }
         return result
@@ -117,7 +132,22 @@ class HybridHinglishEngine(
         config: VoiceModelConfig = VoiceModelConfig.getRecommended()
     ) {
         if (_state.value.currentMode == HinglishEngineMode.LIVE_REALTIME) {
-            vadWhisper.flushRemaining(coroutineScope, config)
+            if (voskEngine.isModelLoaded) {
+                val finalVosk = voskEngine.getFinalResult()
+                if (finalVosk.isNotBlank()) {
+                    _state.update { current ->
+                        val newFinal = if (current.finalizedText.isBlank()) finalVosk else "${current.finalizedText} $finalVosk"
+                        current.copy(
+                            finalizedText = newFinal,
+                            liveText = newFinal,
+                            interimWordText = ""
+                        )
+                    }
+                }
+                voskEngine.reset()
+            } else {
+                vadWhisper.flushRemaining(coroutineScope, config)
+            }
         }
         _state.update { it.copy(isSpeaking = false) }
     }
@@ -128,7 +158,7 @@ class HybridHinglishEngine(
 
     fun clear() {
         vadWhisper.reset()
-        streamingAcoustic.reset()
+        voskEngine.reset()
         _state.update {
             it.copy(
                 liveText = "",
