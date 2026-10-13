@@ -89,21 +89,39 @@ class AudioRecorderManager {
 
         val bufferSize = (minBufferSize * 4).coerceAtLeast(SAMPLE_RATE * 2)
 
-        val record = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                SAMPLE_RATE,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                bufferSize
-            )
-        } catch (e: Exception) {
-            return Result.failure(IllegalStateException("AudioRecord creation failed: ${e.message}", e))
+        val audioSources = intArrayOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.DEFAULT
+        )
+
+        var record: AudioRecord? = null
+        var lastException: Exception? = null
+
+        for (source in audioSources) {
+            try {
+                val candidate = AudioRecord(
+                    source,
+                    SAMPLE_RATE,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+                if (candidate.state == AudioRecord.STATE_INITIALIZED) {
+                    record = candidate
+                    Log.i(TAG, "AudioRecord initialized successfully with audio source: $source")
+                    break
+                } else {
+                    candidate.release()
+                }
+            } catch (e: Exception) {
+                lastException = e
+                Log.w(TAG, "Failed to initialize AudioRecord with source $source: ${e.message}")
+            }
         }
 
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
-            record.release()
-            return Result.failure(IllegalStateException("AudioRecord failed to initialize"))
+        if (record == null) {
+            return Result.failure(IllegalStateException("AudioRecord failed to initialize with any audio source", lastException))
         }
 
         try {

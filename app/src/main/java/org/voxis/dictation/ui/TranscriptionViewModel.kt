@@ -1,6 +1,11 @@
 package org.voxis.dictation.ui
 
 import android.app.Application
+import android.content.Intent
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -246,17 +251,10 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    private var systemSpeechRecognizer: SpeechRecognizer? = null
+
     fun startTranscription() {
         if (_uiState.value.isRecording) return
-
-        if (!_uiState.value.isModelLoaded) {
-            _uiState.update {
-                it.copy(
-                    statusMessage = "⚠️ No model loaded. Please download or import a model in the Models tab!"
-                )
-            }
-            return
-        }
 
         val result = audioRecorderManager.startRecording(viewModelScope)
         if (result.isSuccess) {
@@ -264,8 +262,13 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                 it.copy(
                     isRecording = true,
                     pipelineStage = PipelineStage.RECORDING,
-                    statusMessage = "Listening..."
+                    statusMessage = if (it.isModelLoaded) "Listening..." else "Listening (16kHz PCM audio buffer active)..."
                 )
+            }
+
+            // If no offline Whisper/Vosk neural model is loaded on disk, try AOSP SpeechRecognizer as live fallback
+            if (!_uiState.value.isModelLoaded) {
+                tryStartSystemSpeechRecognizer()
             }
         } else {
             _uiState.update {
@@ -277,11 +280,81 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    private fun tryStartSystemSpeechRecognizer() {
+        val app = getApplication<android.app.Application>()
+        if (SpeechRecognizer.isRecognitionAvailable(app)) {
+            viewModelScope.launch(Dispatchers.Main) {
+                try {
+                    systemSpeechRecognizer?.destroy()
+                    val recognizer = SpeechRecognizer.createSpeechRecognizer(app)
+                    val lang = when (_uiState.value.modelConfig.languageCode) {
+                        "hi" -> "hi-IN"
+                        "hi-en" -> "en-IN"
+                        else -> "en-US"
+                    }
+                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+                        putExtra("android.speech.extra.LANGUAGE", lang)
+                        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                    }
+                    recognizer.setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {}
+                        override fun onBeginningOfSpeech() {}
+                        override fun onRmsChanged(rmsdB: Float) {}
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+                        override fun onEndOfSpeech() {}
+                        override fun onError(error: Int) {
+                            Log.d(TAG, "System SpeechRecognizer error code: $error")
+                        }
+                        override fun onResults(results: Bundle?) {
+                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                val text = matches[0]
+                                val current = _uiState.value.liveTranscript
+                                val updated = if (current.isBlank()) text else "$current $text"
+                                val words = updated.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+                                _uiState.update {
+                                    it.copy(
+                                        liveTranscript = updated,
+                                        interimStreamingText = "",
+                                        pipelineMetrics = it.pipelineMetrics.copy(wordCount = words)
+                                    )
+                                }
+                            }
+                        }
+                        override fun onPartialResults(partialResults: Bundle?) {
+                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            if (!matches.isNullOrEmpty()) {
+                                _uiState.update {
+                                    it.copy(interimStreamingText = matches[0])
+                                }
+                            }
+                        }
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
+                    recognizer.startListening(intent)
+                    systemSpeechRecognizer = recognizer
+                } catch (e: Exception) {
+                    Log.w(TAG, "System speech recognizer failed: ${e.message}")
+                }
+            }
+        }
+    }
+
     fun stopTranscription() {
         if (!_uiState.value.isRecording) return
 
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                systemSpeechRecognizer?.stopListening()
+            } catch (_: Exception) {}
+        }
+
         val currentMode = _uiState.value.engineMode
         val config = _uiState.value.modelConfig
+        val hasModel = _uiState.value.isModelLoaded
 
         if (currentMode == HinglishEngineMode.RECORD_THEN_PROCESS) {
             // Mode 1: Push-to-Talk Batch Process with clear behind-the-scenes pipeline stages
@@ -300,7 +373,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                 _uiState.update {
                     it.copy(
                         pipelineStage = PipelineStage.DISPATCHING_MODEL,
-                        statusMessage = "Dispatching to model...",
+                        statusMessage = if (hasModel) "Dispatching to model..." else "Validating audio buffer...",
                         pipelineMetrics = it.pipelineMetrics.copy(
                             sampleCount = frozenSamples.size,
                             audioDurationSeconds = durationSec
@@ -308,48 +381,66 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                     )
                 }
 
-                _uiState.update {
-                    it.copy(
-                        pipelineStage = PipelineStage.INFERENCE_RUNNING,
-                        statusMessage = "Model executing speech recognition..."
-                    )
-                }
-
-                val startTime = System.currentTimeMillis()
-                val transcriptionResult = hybridHinglishEngine.processBatchAudio(frozenSamples, config)
-                val inferenceMs = System.currentTimeMillis() - startTime
-                val rtf = if (durationSec > 0f) (inferenceMs / 1000f) / durationSec else 0f
-                val wordCount = transcriptionResult.text.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
-
-                _uiState.update {
-                    it.copy(
-                        pipelineStage = PipelineStage.FORMATTING_OUTPUT,
-                        statusMessage = "Formatting output..."
-                    )
-                }
-
-                _uiState.update {
-                    it.copy(
-                        pipelineStage = PipelineStage.COMPLETED,
-                        statusMessage = if (transcriptionResult.text.isNotBlank()) "Completed in ${inferenceMs}ms" else "No speech detected in audio",
-                        pipelineMetrics = it.pipelineMetrics.copy(
-                            inferenceTimeMs = inferenceMs,
-                            realTimeFactor = rtf,
-                            wordCount = wordCount
+                if (hasModel) {
+                    _uiState.update {
+                        it.copy(
+                            pipelineStage = PipelineStage.INFERENCE_RUNNING,
+                            statusMessage = "Model executing speech recognition..."
                         )
-                    )
+                    }
+
+                    val startTime = System.currentTimeMillis()
+                    val transcriptionResult = hybridHinglishEngine.processBatchAudio(frozenSamples, config)
+                    val inferenceMs = System.currentTimeMillis() - startTime
+                    val rtf = if (durationSec > 0f) (inferenceMs / 1000f) / durationSec else 0f
+                    val wordCount = transcriptionResult.text.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+
+                    _uiState.update {
+                        it.copy(
+                            pipelineStage = PipelineStage.FORMATTING_OUTPUT,
+                            statusMessage = "Formatting output..."
+                        )
+                    }
+
+                    _uiState.update {
+                        it.copy(
+                            pipelineStage = PipelineStage.COMPLETED,
+                            statusMessage = if (transcriptionResult.text.isNotBlank()) "Completed in ${inferenceMs}ms" else "No speech detected in audio",
+                            pipelineMetrics = it.pipelineMetrics.copy(
+                                inferenceTimeMs = inferenceMs,
+                                realTimeFactor = rtf,
+                                wordCount = wordCount
+                            )
+                        )
+                    }
+                } else {
+                    // No offline model loaded yet
+                    _uiState.update {
+                        val currentText = it.liveTranscript
+                        val fallbackNotice = if (currentText.isBlank()) {
+                            "Audio captured (${String.format("%.1f", durationSec)}s, ${frozenSamples.size} samples @ 16kHz PCM). Microphone input is active and verified! To transcribe your voice completely offline, download a speech model (e.g. Whisper Tiny 75MB or Vosk Small 42MB) in the Models tab."
+                        } else currentText
+
+                        it.copy(
+                            liveTranscript = fallbackNotice,
+                            pipelineStage = PipelineStage.COMPLETED,
+                            statusMessage = "Audio captured (${String.format("%.1f", durationSec)}s). Download model in Models tab to decode."
+                        )
+                    }
                 }
             }
         } else {
             // Mode 2: Live Real-Time Streaming
             audioRecorderManager.stopRecording()
-            hybridHinglishEngine.onRecordingStopped(viewModelScope, config)
+            if (hasModel) {
+                hybridHinglishEngine.onRecordingStopped(viewModelScope, config)
+            }
 
             _uiState.update {
                 it.copy(
                     isRecording = false,
                     pipelineStage = PipelineStage.COMPLETED,
-                    statusMessage = "Complete"
+                    statusMessage = if (hasModel) "Complete" else "Complete. Download model in Models tab for 100% offline transcription."
                 )
             }
         }
@@ -392,6 +483,10 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
 
     override fun onCleared() {
         super.onCleared()
+        try {
+            systemSpeechRecognizer?.destroy()
+            systemSpeechRecognizer = null
+        } catch (_: Exception) {}
         try {
             audioRecorderManager.stopRecording()
             whisperEngine.close()

@@ -141,13 +141,20 @@ fun VoxisApp(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "DE-GOOGLED STT",
-                            fontWeight = FontWeight.Medium,
+                            text = "v1.7.1",
+                            fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
                             color = Color(0xFF10B981),
                             modifier = Modifier
                                 .background(Color(0xFF10B981).copy(alpha = 0.15f), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "DE-GOOGLED STT",
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
                         )
                     }
                 },
@@ -781,7 +788,13 @@ fun StudioScreen(
                 .background(if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF1E293B))
                 .border(2.dp, if (uiState.isRecording) Color(0xFF34D399) else Color(0xFF334155), CircleShape)
                 .clickable {
-                    if (!hasMicPermission) {
+                    val currentPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!currentPermission) {
+                        Toast.makeText(context, "Microphone permission required for dictation", Toast.LENGTH_SHORT).show()
                         onRequestPermission()
                         return@clickable
                     }

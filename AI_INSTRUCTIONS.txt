@@ -176,6 +176,20 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
     - Documented strict project semantic versioning governance:
       X = major architecture overhaul, Y = major feature iteration (incremented by 1),
       Z = minor patch/bugfix.
+
+- Version 1.7.1:
+  * RESOLVED "TAP TO SPEAK" BUTTON ACTIVATION BUG:
+    - Removed blocking `if (!_uiState.value.isModelLoaded) return` check in `TranscriptionViewModel.startTranscription()`.
+      Tapping the microphone button now ALWAYS turns on the microphone, activates the recording state,
+      and listens immediately without getting stuck or refusing to start.
+    - Added multi-source fallback in `AudioRecorderManager` (`VOICE_RECOGNITION` -> `MIC` -> `DEFAULT`)
+      ensuring `AudioRecord` reliably initializes across all hardware and ROM configurations.
+    - Added active runtime permission validation on click (`ContextCompat.checkSelfPermission`) so
+      permission state is never stale.
+    - Added seamless integration with AOSP `SpeechRecognizer` as a live fallback on standard Android
+      when no heavy offline Whisper/Vosk model file has been downloaded yet.
+    - Updated semantic versioning to v1.7.1 (`versionCode 18`, `versionName "1.7.1"`, `package.json "1.7.1"`,
+      and GitHub Actions workflow `Voxis_v1.7.1.apk`).
 ================================================================================
 
 

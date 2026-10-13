@@ -128,11 +128,12 @@ const HTML_CONTENT = `<!DOCTYPE html>
       <div class="brand">
         <div class="dot"></div>
         <h1>VOXIS</h1>
-        <span class="badge">DE-GOOGLED STT</span>
+        <span class="badge">v1.7.1</span>
+        <span class="badge" style="margin-left:6px; background:rgba(148,163,184,0.15); color:#94A3B8;">DE-GOOGLED STT</span>
       </div>
       <div>
-        <a href="/app-debug.apk" class="btn" download="voxis-debug.apk">
-          ⬇ Download APK (16MB)
+        <a href="/app-debug.apk" class="btn" download="Voxis_v1.7.1.apk">
+          ⬇ Download APK (v1.7.1)
         </a>
       </div>
     </header>
