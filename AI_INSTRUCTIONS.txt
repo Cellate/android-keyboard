@@ -49,6 +49,16 @@ Target Operating Systems: GrapheneOS, CalyxOS, LineageOS, Standard AOSP
   probes. Never get distracted by background task notifications about the server.
   Save 100% of tokens for user tasks, features, and Android code.
 
+- MANDATORY SEMANTIC VERSIONING ON EVERY CHANGE (vX.Y.Z):
+  Every time changes are committed, the version number MUST be updated in:
+  1. `app/build.gradle`: `versionCode` (integer increment) and `versionName "X.Y.Z"`
+  2. `.github/workflows/build-apk.yml`: Artifact name & output file `Voxis_vX.Y.Z.apk`
+  3. `package.json`: `"version": "X.Y.Z"`
+  * X (1st number): Incremented for entirely new architecture/paradigm ("super duper mega changes").
+  * Y (2nd number): Incremented by 1 for every major iteration/feature turn (e.g. v1.6.0 -> v1.7.0).
+  * Z (3rd number): Incremented for minor bug fixes or small tweaks within the same iteration (e.g. v1.7.1).
+
+
 --------------------------------------------------------------------------------
 2. LANGUAGE PRIORITIES & MODELS
 --------------------------------------------------------------------------------
@@ -158,10 +168,16 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
       speech recognition on mobile CPU (arm64-v8a, armeabi-v7a, x86_64).
     - Created `VoskEngine.kt` supporting continuous streaming recognition via
       `acceptWaveForm()` / `partialResult` and full batch recognition via `finalResult`.
-    - Added automated `.zip` model decompression to `ModelManager.kt` for seamless
-      one-tap downloading and unpacking of offline models (Vosk Hindi 42MB, Vosk English 40MB).
-    - Supported dual-engine arbitration: real Vosk neural recognition + Whisper GGML.
+- Version 1.7.0:
+  * SYSTEMATIC VERSIONING PROTOCOL ENFORCEMENT:
+    - Bumped `versionCode` to `17` and `versionName` to `"1.7.0"` in `app/build.gradle`.
+    - Updated GitHub Actions packaging workflow to build and upload `Voxis_v1.7.0.apk`.
+    - Bumped `package.json` to `"version": "1.7.0"`.
+    - Documented strict project semantic versioning governance:
+      X = major architecture overhaul, Y = major feature iteration (incremented by 1),
+      Z = minor patch/bugfix.
 ================================================================================
+
 
 
 

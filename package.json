@@ -1,6 +1,6 @@
 {
   "name": "voxis-dictation",
-  "version": "1.0.0",
+  "version": "1.7.0",
   "description": "Voxis - Offline Dictation & De-Googled STT App & SDK",
   "main": "server.js",
   "scripts": {
