@@ -119,6 +119,12 @@ fun VoxisApp(
         }
     }
 
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == NavTab.STUDIO) {
+            viewModel.loadActiveModel()
+        }
+    }
+
     Scaffold(
         containerColor = Color(0xFF0B0F19),
         topBar = {
@@ -141,7 +147,7 @@ fun VoxisApp(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "v1.7.1",
+                            text = "v1.8.0",
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
                             color = Color(0xFF10B981),
@@ -406,6 +412,195 @@ fun StudioScreen(
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFFCD34D)
                     )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // Studio Test Audio Runner (Benchmark & Verification)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+            border = CardDefaults.outlinedCardBorder().copy(
+                width = 1.dp,
+                brush = androidx.compose.ui.graphics.SolidColor(Color(0xFF0EA5E9))
+            ),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = "Benchmark",
+                            tint = Color(0xFF38BDF8),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "STUDIO TEST AUDIO RUNNER",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
+                            color = Color(0xFF38BDF8)
+                        )
+                    }
+                    Text(
+                        text = "test.mp3 • 16kHz • 6.6s",
+                        fontSize = 10.sp,
+                        color = Color(0xFF94A3B8),
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Target Utterance Box
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF1E293B)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+                        Text(
+                            text = "TARGET UTTERANCE:",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF64748B),
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "\"Hello, Hello mic check 1 2 3 hello kya meri awaaz ja rahi hai hello\"",
+                            fontSize = 12.sp,
+                            color = Color(0xFFE2E8F0),
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                // Live Pipeline Stage badge during or after benchmark
+                if (uiState.isRunningBenchmark || uiState.benchmarkStage.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (uiState.isRunningBenchmark) Color(0xFF0369A1).copy(alpha = 0.25f) else Color(0xFF065F46).copy(alpha = 0.25f),
+                        border = CardDefaults.outlinedCardBorder().copy(
+                            width = 1.dp,
+                            brush = androidx.compose.ui.graphics.SolidColor(
+                                if (uiState.isRunningBenchmark) Color(0xFF38BDF8) else Color(0xFF10B981)
+                            )
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (uiState.isRunningBenchmark) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = Color(0xFF38BDF8),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                text = uiState.benchmarkStage,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (uiState.isRunningBenchmark) Color(0xFF7DD3FC) else Color(0xFF6EE7B7)
+                            )
+                        }
+                    }
+                }
+
+                // Benchmark Metrics row if completed
+                uiState.benchmarkResult?.let { bench ->
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("Latency", fontSize = 9.sp, color = Color(0xFF64748B))
+                            Text("${bench.inferenceTimeMs}ms", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8))
+                        }
+                        Column {
+                            Text("RTF", fontSize = 9.sp, color = Color(0xFF64748B))
+                            Text("${String.format("%.2f", bench.realTimeFactor)}x", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF10B981))
+                        }
+                        Column {
+                            Text("Confidence", fontSize = 9.sp, color = Color(0xFF64748B))
+                            Text("${String.format("%.1f", bench.confidenceScore)}%", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFFFCD34D))
+                        }
+                        Column {
+                            Text("Engine", fontSize = 9.sp, color = Color(0xFF64748B))
+                            Text(bench.engineUsed, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFE2E8F0))
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Action Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { viewModel.runTestAudioBenchmark() },
+                        enabled = !uiState.isRunningBenchmark,
+                        modifier = Modifier.weight(1.3f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Run", modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (uiState.isRunningBenchmark) "Running..." else "▶ Run Benchmark",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            if (uiState.isAudioPlaying) {
+                                viewModel.stopTestAudio()
+                            } else {
+                                viewModel.playTestAudio()
+                            }
+                        },
+                        modifier = Modifier.weight(0.9f),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = if (uiState.isAudioPlaying) Color(0xFFEF4444) else Color(0xFF94A3B8)
+                        ),
+                        contentPadding = PaddingValues(vertical = 8.dp)
+                    ) {
+                        Icon(
+                            if (uiState.isAudioPlaying) Icons.Default.Stop else Icons.Default.VolumeUp,
+                            contentDescription = "Audio",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            text = if (uiState.isAudioPlaying) "Stop" else "Listen",
+                            fontSize = 12.sp
+                        )
+                    }
                 }
             }
         }
@@ -714,27 +909,11 @@ fun StudioScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextButton(
-                        onClick = {
-                            val samplePhrases = when (uiState.modelConfig.languageCode) {
-                                "hi" -> listOf(
-                                    "नमस्ते, यह एक ऑफ़लाइन डिक्टेशन परीक्षण है।",
-                                    "ध्वनि पहचान बिना इंटरनेट के सुचारू रूप से कार्य कर रही है।"
-                                )
-                                "en" -> listOf(
-                                    "Hello, this is Voxis offline speech recognition.",
-                                    "Real time speech to text transcription on device."
-                                )
-                                else -> listOf(
-                                    "Haan bhai, kal meeting schedule kar do at 10 AM.",
-                                    "Yeh offline voice dictation smoothly kaam kar raha hai."
-                                )
-                            }
-                            client.injectTranscribedText(samplePhrases.random())
-                        }
+                        onClick = { viewModel.runTestAudioBenchmark() }
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Sample", tint = Color(0xFF10B981), modifier = Modifier.size(15.dp))
+                        Icon(Icons.Default.Speed, contentDescription = "Benchmark", tint = Color(0xFF38BDF8), modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Sample Injection", fontSize = 11.sp, color = Color(0xFF10B981))
+                        Text("Test Runner", fontSize = 11.sp, color = Color(0xFF38BDF8))
                     }
 
                     Row {

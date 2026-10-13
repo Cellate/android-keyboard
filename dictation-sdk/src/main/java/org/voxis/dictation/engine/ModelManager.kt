@@ -37,7 +37,7 @@ object ModelManager {
             val unzippedDir = File(modelsDir, model.fileName.substringBeforeLast("."))
             if (unzippedDir.exists() && unzippedDir.isDirectory) {
                 model.copy(localPath = unzippedDir.absolutePath)
-            } else if (localFile.exists() && localFile.length() > 500 * 1024) {
+            } else if (localFile.exists() && localFile.length() > 0) {
                 model.copy(localPath = localFile.absolutePath)
             } else {
                 model.copy(localPath = null)
@@ -51,12 +51,38 @@ object ModelManager {
                 model.copy(localPath = unzippedDir.absolutePath)
             } else if (localFile.exists() && localFile.length() > 0) {
                 model.copy(localPath = localFile.absolutePath)
+            } else if (!model.localPath.isNullOrBlank() && File(model.localPath!!).exists()) {
+                model
             } else {
                 model
             }
         }
 
-        return predefined + custom
+        val knownPaths = (predefined + custom).mapNotNull { it.localPath }.toSet()
+        val extraFiles: List<File> = modelsDir.listFiles()?.filter { file ->
+            !knownPaths.contains(file.absolutePath) &&
+            !file.name.endsWith(".tmp") &&
+            (file.isDirectory || (file.isFile && file.length() > 0 && (file.name.endsWith(".bin") || file.name.endsWith(".gguf") || file.name.contains("model"))))
+        } ?: emptyList()
+
+        val extraModels = extraFiles.map { file ->
+            val sizeMb = if (file.isDirectory) 42 else (file.length() / (1024 * 1024)).toInt().coerceAtLeast(1)
+            SpeechModel(
+                id = "discovered_${file.name.hashCode()}",
+                displayName = file.name.substringBeforeLast("."),
+                language = if (file.name.contains("hi", ignoreCase = true)) "Hindi / Hinglish" else "Multilingual",
+                languageCode = if (file.name.contains("hi", ignoreCase = true)) "hi-en" else "en",
+                approximateSizeMb = sizeMb,
+                description = "Locally discovered model file (${file.name}) in storage directory.",
+                downloadUrl = "",
+                fileName = file.name,
+                isBundled = false,
+                isCustom = true,
+                localPath = file.absolutePath
+            )
+        }
+
+        return predefined + custom + extraModels
     }
 
     fun getActiveModel(context: Context): SpeechModel {

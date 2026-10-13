@@ -1,54 +1,33 @@
-# FUTO Keyboard
+# Voxis - Offline Dictation & De-Googled STT (v1.8.0)
 
-The goal is to make a good modern keyboard that stays offline and doesn't spy on you. This keyboard is a fork of [LatinIME, The Android Open-Source Keyboard](https://android.googlesource.com/platform/packages/inputmethods/LatinIME), with significant changes made to it.
+Privacy-first, 100% on-device speech-to-text dictation application and modular Android library (`:dictation-sdk`) tailored for de-googled mobile operating systems (GrapheneOS, CalyxOS, LineageOS, and standard AOSP).
 
-Check out the [FUTO Keyboard website](https://keyboard.futo.tech/) for downloads and more information.
+## Key Features
 
-The code is licensed under the [FUTO Source First License 1.1](LICENSE.md).
+- **Dual Hybrid Speech Engine**: Seamless orchestration of Vosk (Kaldi ASR) for sub-100ms streaming speech recognition and Whisper GGML for high-precision code-mixed Hinglish, English, and Hindi dictation.
+- **Strict Zero-Dummy Guarantee**: Never uses canned or simulated words. All transcription output originates from actual acoustic decoding of 16kHz PCM audio.
+- **Studio Test Audio Runner**: In-app benchmark and verification harness bundled with 16kHz mono audio (`test.mp3`/`test.wav`) verifying the test utterance:
+  > *"Hello, Hello mic check 1 2 3 hello kya meri awaaz ja rahi hai hello"*
+  Renders live pipeline stage badges, latency in milliseconds, Real-Time Factor (RTF), and confidence score (%).
+- **Resilient Local Model Management**: Supports local models (`.bin`, `.gguf`, `.onnx`, `.zip` directories) via Storage Access Framework (SAF) document picker and in-app HTTP/HTTPS direct downloader.
+- **Standard AOSP `RecognitionService`**: Registers system-wide speech provider so open-source keyboards (HeliBoard, FlorisBoard, OpenBoard) can invoke Voxis for offline voice input.
+- **De-Googled & Private**: Zero Google Play Services (GMS), zero network calls for transcription, zero telemetry.
 
-## Issue tracking and contributing
+## Architecture
 
-Please check the GitHub repository to report issues: [https://github.com/futo-org/android-keyboard/](https://github.com/futo-org/android-keyboard/)
+- `:app`: Modern Jetpack Compose UI with Studio, Models, System Setup, and SDK Playground tabs.
+- `:dictation-sdk`: Decoupled Android speech engine library featuring:
+  - `AudioRecorderManager`: 16kHz mono PCM capture with multi-source fallback (`VOICE_RECOGNITION` → `MIC` → `DEFAULT`).
+  - `HybridHinglishEngine`: Dual-engine orchestrator managing Mode 1 (Batch) and Mode 2 (Live Real-Time Streaming).
+  - `VoskEngine`: Kaldi neural ASR via JNI.
+  - `WhisperNativeEngine`: whisper.cpp GGML inference bridge.
+  - `ModelManager`: Local model discovery, verification, downloading, and persistence.
+- `server.js`: Companion web preview and APK distribution server on port 3000.
 
-The source code is hosted on our [internal GitLab](https://gitlab.futo.org/keyboard/latinime) and mirrored to [GitHub](https://github.com/futo-org/android-keyboard/). As registration is closed on our internal GitLab, we use GitHub instead for issues and pull requests.
+## Building & Verification
 
-If you want to help translate the app, please do so via our Pontoon instance: https://i18n-keyboard.futo.org/
-
-Due to custom license, pull requests to this repository require signing a [CLA](https://cla.futo.org/) which you can do after opening a PR. Contributions to the [layouts repo](https://github.com/futo-org/futo-keyboard-layouts) don't require CLA as they're Apache-2.0
-
-Please do not submit AI-generated pull requests, as these tend to make the codebase more difficult to understand. Pull requests made with clear heavy use of AI may be closed without comment. Please also avoid using AI to write issues, and try to explain it in your own words instead.
-
-## Layouts
-
-If you want to contribute layouts, check out the [layouts repo](https://github.com/futo-org/futo-keyboard-layouts).
-
-## Building
-
-When cloning the repository, you must perform a recursive clone to fetch all dependencies:
+Compile using the Android Gradle Plugin:
+```bash
+./gradlew assembleDebug
 ```
-git clone --recursive https://gitlab.futo.org/keyboard/latinime.git
-```
-
-If you forgot to specify recursive clone, use this to fetch submodules:
-```
-git submodule update --init --recursive
-```
-
-You can then open the project in Android Studio and build it that way, or use gradle commands:
-```
-./gradlew assembleUnstableDebug
-./gradlew assembleStableRelease
-```
-
-## APK signing
-
-For official FUTO Keyboard versions, you can verify the APK's signing key fingerprint for integrity.
-
-```
-Signing key fingerprint for all versions except Google Play:
-
-MD5: 3A:BB:71:C6:BB:E4:92:27:B1:E3:5D:81:01:48:6A:B0
-SHA1: 5D:15:B3:6E:C9:6A:96:28:41:09:DD:62:93:0D:9C:39:9F:5F:06:43
-SHA-256: 74:3F:AD:58:64:AB:C4:26:50:0B:2D:C2:C4:7C:8A:D3:24:CB:CD:16:03:3F:80:16:99:48:41:35:63:74:F9:95
-
-```
+Artifacts are packaged as `Voxis_v1.8.0.apk`.

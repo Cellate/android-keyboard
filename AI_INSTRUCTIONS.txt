@@ -204,6 +204,24 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
   * VERSIONING & ARTIFACT SYNCHRONIZATION:
     - Synchronized `app/build.gradle` (v1.7.1, versionCode 18), `package.json` (1.7.1), `MainActivity.kt` (v1.7.1 badge),
       and `.github/workflows/build-apk.yml` (`Voxis_v1.7.1.apk`).
+
+- Version 1.8.0:
+  * DUAL HYBRID SPEECH ENGINE ARCHITECTURE:
+    - Integrated Vosk (Kaldi) neural streaming engine with Whisper native fallback for complex code-mixed vocabulary.
+    - Synchronized live model engine state across `VadEndpointedWhisperEngine`, `HybridHinglishEngine`, and `TranscriptionViewModel`.
+  * COMPREHENSIVE MODEL SELECTION & DETECTION FIX:
+    - Fixed model detection in `ModelManager.getAvailableModels` to auto-discover unindexed `.bin`, `.gguf`, and unzipped directories.
+    - Added directory / archive unzipping detection in `loadActiveModel()` for downloaded and imported Vosk model archives.
+    - Added automatic model synchronization on tab switch (`LaunchedEffect(selectedTab)`) guaranteeing immediate "Model Ready" status.
+  * STUDIO TEST AUDIO RUNNER (BENCHMARK & VERIFICATION):
+    - Synthesized and bundled 16kHz mono audio `test.mp3` and `test.wav` with target utterance:
+      "Hello, Hello mic check 1 2 3 hello kya meri awaaz ja rahi hai hello".
+    - Added interactive verification card in Studio tab with one-tap execution, stage transitions, latency (ms), RTF, and confidence (%).
+    - Added companion test audio runner and audio streaming endpoints (`/test.mp3`, `/test.wav`) in `server.js`.
+  * PURGED ALL REMAINING MOCK BUTTONS & CANNED PHRASES:
+    - Completely replaced "Sample Injection" button with the benchmark runner.
+  * SYNCHRONIZED REPOSITORY VERSIONING:
+    - Bumped `app/build.gradle` (v1.8.0, versionCode 19), `package.json` (1.8.0), `build-apk.yml` (`Voxis_v1.8.0.apk`), and UI badges to v1.8.0.
 ================================================================================
 
 

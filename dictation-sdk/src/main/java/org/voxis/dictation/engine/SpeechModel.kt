@@ -18,7 +18,7 @@ data class SpeechModel(
     fun isDownloaded(): Boolean {
         if (localPath.isNullOrBlank()) return false
         val file = File(localPath!!)
-        return file.exists() && file.length() > 0
+        return file.exists() && (file.isDirectory || file.length() > 0)
     }
 
     companion object {

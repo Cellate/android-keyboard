@@ -66,25 +66,25 @@ jobs:
             APK_FILE=$(find . -name "*.apk" | head -n 1)
           fi
           echo "Found APK at: $APK_FILE"
-          cp "$APK_FILE" build-artifacts/Voxis_v1.7.1.apk
-          APK_SIZE=$(du -h build-artifacts/Voxis_v1.7.1.apk | cut -f1)
+          cp "$APK_FILE" build-artifacts/Voxis_v1.8.0.apk
+          APK_SIZE=$(du -h build-artifacts/Voxis_v1.8.0.apk | cut -f1)
 
           echo "### 🚀 Android Build Succeeded!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Package** | \`Voxis_v1.7.1.apk\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Version** | v1.7.1 (Major: 1, Iteration: 7, Bugfix: 1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Package** | \`Voxis_v1.8.0.apk\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Version** | v1.8.0 (Major: 1, Iteration: 8, Patch: 0) |" >> $GITHUB_STEP_SUMMARY
           echo "| **Size** | \`$APK_SIZE\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Target Architecture** | arm64-v8a / universal debug |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⬇️ **How to download:** Scroll down to the **Artifacts** section at the bottom of this page and click on **\`Voxis_v1.7.1\`**, or download directly under **Releases**." >> $GITHUB_STEP_SUMMARY
+          echo "⬇️ **How to download:** Scroll down to the **Artifacts** section at the bottom of this page and click on **\`Voxis_v1.8.0\`**, or download directly under **Releases**." >> $GITHUB_STEP_SUMMARY
 
       - name: Upload Debug APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Voxis_v1.7.1
-          path: build-artifacts/Voxis_v1.7.1.apk
+          name: Voxis_v1.8.0
+          path: build-artifacts/Voxis_v1.8.0.apk
           retention-days: 30
           if-no-files-found: error
 
@@ -92,9 +92,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.7.1' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Voxis v1.7.1 Release' }}
-          files: build-artifacts/Voxis_v1.7.1.apk
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.8.0' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Voxis v1.8.0 Release' }}
+          files: build-artifacts/Voxis_v1.8.0.apk
           generate_release_notes: true
           draft: false
           prerelease: false

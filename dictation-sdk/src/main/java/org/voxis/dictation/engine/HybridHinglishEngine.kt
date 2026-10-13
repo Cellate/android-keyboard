@@ -63,6 +63,15 @@ class HybridHinglishEngine(
         }
     }
 
+    fun syncModelState() {
+        _state.update {
+            it.copy(
+                engineName = vadWhisper.activeEngineName,
+                hasModel = vadWhisper.isModelLoaded
+            )
+        }
+    }
+
     fun processFrame(
         frameSamples: FloatArray,
         isVoiceActive: Boolean,
