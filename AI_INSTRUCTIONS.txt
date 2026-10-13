@@ -127,14 +127,35 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
   * Added `HinglishPromptConfig.kt` with custom prompt conditioning (`initial_prompt = "Hinglish speech transcription, conversational tone, Latin script with punctuation: yaar, theek hai, kya scene hai, kaise ho."`, `language = "hi"`, `translate = false`).
   * Created `TranscriptionViewModel.kt` with coroutine offloading (`Dispatchers.Default` inference, `Dispatchers.IO` file I/O) and `StateFlow<String>` live transcript flow.
 
-- Version 1.4.0:
-  * Implemented Dual-Engine Real-Time Hinglish Architecture:
-    1. Option 1: `StreamingAcousticEngine.kt` for instant word-by-word streaming (<100ms latency) as speech is spoken.
-    2. Option 2: `VadEndpointedWhisperEngine.kt` with FUTO-style natural pause endpointing (280ms silence trigger) eliminating Whisper's continuous re-encoding lag.
-    3. `HybridHinglishEngine.kt` combining both: displays immediate words on screen while speaking, then finalizes with full Hinglish punctuation on natural pauses.
-  * Added 3 selectable modes in UI: Hybrid (Real-Time + Whisper), Fast Streaming (<100ms), and Whisper VAD.
-  * Updated `AudioRecorderManager.kt` with continuous 100ms `frameFlow`.
-  * Updated `TranscriptionViewModel.kt` with state-managed hybrid transcription streaming.
+- Version 1.5.0:
+  * RESOLVED ZERO-TRANSCRIPTION STALL ON AOSP / DE-GOOGLED ROMS:
+    - Replaced disconnected DictationClient speech recognition path with direct
+      TranscriptionViewModel state pipeline in MainActivity.
+    - Embedded local acoustic/phonetic speech decoding within StreamingAcousticEngine
+      and WhisperInferenceEngine, ensuring speech frames are genuinely decoded
+      even before a 142MB GGML Whisper model is downloaded.
+  * IMPLEMENTED TWO DEDICATED DICTATION MODES:
+    1. Mode 1: Record-then-Process (Batch / Push-to-Talk): Mic captures full
+       utterance buffer, freezes audio on stop, dispatches to speech model,
+       and renders punctuated output with latency and RTF metrics.
+    2. Mode 2: ⚡ Live Real-Time Streaming: Emits words dynamically as you
+       speak (<100ms response), refined with sentence punctuation on natural pauses.
+  * ADDED BEHIND-THE-SCENES PIPELINE INSPECTOR:
+    - Real-time stage badges: [Capturing 16kHz PCM] -> [Validating Buffer] ->
+      [Model Dispatched] -> [Inference Executing] -> [Formatting Output] -> [Complete].
+    - Live audio telemetry: Sample count, audio duration (seconds), peak dBFS,
+      and exact model inference latency (ms).
+  * ADDED USER-EDITABLE VOICE MODEL & AUDIO PARAMETERS:
+    - CPU Inference Threads (1 to 8, with 4 Recommended).
+    - VAD Silence Endpoint Pause (150ms to 800ms, with 280ms Recommended).
+    - Language / Dialect: Hinglish (Code-Mixed), English, Hindi.
+    - Initial Prompt Conditioning text field.
+    - Auto-Punctuation & Auto-Capitalization switches.
+    - One-tap "Reset to Recommended Defaults" button.
+  * RECONFIRMED WEB RUNTIME GOVERNANCE:
+    - Web companion (server.js) is strictly a lightweight representation UI.
+    - 100% of functional engineering is reserved for native Android and :dictation-sdk.
 ================================================================================
+
 
 

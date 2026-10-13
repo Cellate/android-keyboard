@@ -38,13 +38,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.voxis.dictation.client.DictationClient
 import org.voxis.dictation.client.DictationListener
 import org.voxis.dictation.client.DictationState
+import org.voxis.dictation.engine.DecodingStrategy
+import org.voxis.dictation.engine.HinglishEngineMode
 import org.voxis.dictation.engine.ModelManager
 import org.voxis.dictation.engine.SpeechModel
+import org.voxis.dictation.engine.VadSensitivity
+import org.voxis.dictation.engine.VoiceModelConfig
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -83,7 +88,10 @@ enum class NavTab(val title: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun VoxisApp(client: DictationClient) {
+fun VoxisApp(
+    client: DictationClient,
+    viewModel: TranscriptionViewModel = viewModel()
+) {
     val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(NavTab.STUDIO) }
 
@@ -185,6 +193,7 @@ fun VoxisApp(client: DictationClient) {
         ) {
             when (selectedTab) {
                 NavTab.STUDIO -> StudioScreen(
+                    viewModel = viewModel,
                     client = client,
                     hasMicPermission = hasMicPermission,
                     onRequestPermission = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) },
@@ -198,65 +207,34 @@ fun VoxisApp(client: DictationClient) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudioScreen(
+    viewModel: TranscriptionViewModel,
     client: DictationClient,
     hasMicPermission: Boolean,
     onRequestPermission: () -> Unit,
     onNavigateToModels: () -> Unit
 ) {
     val context = LocalContext.current
-    val state by client.state.collectAsState()
-    val audioLevel by client.audioLevels.collectAsState()
-    var transcriptText by remember { mutableStateOf("") }
+    val uiState by viewModel.uiState.collectAsState()
 
-    val activeModel = client.currentModel
-    val isModelDownloaded = activeModel.isDownloaded()
+    var showConfigDialog by remember { mutableStateOf(false) }
 
-    val isListening = state is DictationState.Listening || state is DictationState.Transcribing
-
-    LaunchedEffect(state) {
-        when (val s = state) {
-            is DictationState.Transcribing -> {
-                if (s.partialText.isNotBlank()) {
-                    transcriptText = s.partialText
-                }
+    if (showConfigDialog) {
+        VoiceModelConfigDialog(
+            currentConfig = uiState.modelConfig,
+            onDismiss = { showConfigDialog = false },
+            onSave = { updated ->
+                viewModel.updateModelConfig(updated)
+                showConfigDialog = false
+                Toast.makeText(context, "Voice model settings applied", Toast.LENGTH_SHORT).show()
+            },
+            onResetToRecommended = {
+                viewModel.resetModelConfigToRecommended()
+                Toast.makeText(context, "Reset to recommended settings", Toast.LENGTH_SHORT).show()
             }
-            is DictationState.Complete -> {
-                if (s.finalText.isNotBlank()) {
-                    transcriptText = s.finalText
-                }
-            }
-            else -> {}
-        }
-    }
-
-    LaunchedEffect(client) {
-        client.transcriptions.collect { result ->
-            if (result.text.isNotBlank()) {
-                transcriptText = result.text
-            }
-        }
-    }
-
-    DisposableEffect(client) {
-        val listener = object : DictationListener {
-            override fun onStateChanged(s: DictationState) {}
-            override fun onPartialTranscription(text: String) {
-                if (text.isNotBlank()) transcriptText = text
-            }
-            override fun onFinalTranscription(text: String) {
-                if (text.isNotBlank()) transcriptText = text
-            }
-            override fun onAudioLevel(normalizedLevel: Float) {}
-            override fun onError(error: String, cause: Throwable?) {
-                Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
-            }
-        }
-        client.addListener(listener)
-        onDispose {
-            client.removeListener(listener)
-        }
+        )
     }
 
     Column(
@@ -267,9 +245,7 @@ fun StudioScreen(
     ) {
         // Active Model & Status Bar
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onNavigateToModels() },
+            modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
             shape = RoundedCornerShape(12.dp)
         ) {
@@ -283,9 +259,12 @@ fun StudioScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { onNavigateToModels() }
+                    ) {
                         val statusDotColor by animateColorAsState(
-                            targetValue = if (isListening) Color(0xFF10B981) else Color(0xFF64748B)
+                            targetValue = if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF64748B)
                         )
                         Box(
                             modifier = Modifier
@@ -295,26 +274,48 @@ fun StudioScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = when (state) {
-                                is DictationState.Idle -> "READY"
-                                is DictationState.Preparing -> "PREPARING..."
-                                is DictationState.Listening -> "LISTENING..."
-                                is DictationState.Transcribing -> "TRANSCRIBING..."
-                                is DictationState.Complete -> "COMPLETE"
-                                is DictationState.Error -> "ERROR"
-                            },
-                            fontSize = 12.sp,
+                            text = uiState.pipelineStage.name,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
                     }
 
-                    Text(
-                        text = "100% OFFLINE (AOSP)",
-                        fontSize = 10.sp,
-                        color = Color(0xFF94A3B8),
-                        fontFamily = FontFamily.Monospace
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Quick Action to Model & Audio Tuning Dialog
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF10B981).copy(alpha = 0.15f),
+                            modifier = Modifier.clickable { showConfigDialog = true }
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Tune,
+                                    contentDescription = "Parameters",
+                                    tint = Color(0xFF10B981),
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = "PARAMETERS",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF10B981)
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "100% OFFLINE",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8),
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -324,177 +325,108 @@ fun StudioScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable { onNavigateToModels() }
+                    ) {
                         Text(
-                            text = "MODEL: ",
+                            text = "ENGINE: ",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF64748B)
                         )
                         Text(
-                            text = activeModel.displayName,
+                            text = uiState.pipelineMetrics.activeEngineDescription,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = Color(0xFF10B981)
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "[${activeModel.language}]",
-                            fontSize = 10.sp,
-                            color = Color(0xFF94A3B8)
-                        )
                     }
 
                     Text(
-                        text = if (isModelDownloaded) "● LOADED" else "⚠️ NOT DOWNLOADED",
+                        text = if (uiState.isModelLoaded) "● MODEL LOADED" else "● OFFLINE ENGINE READY",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = if (isModelDownloaded) Color(0xFF10B981) else Color(0xFFF59E0B)
+                        color = Color(0xFF10B981)
                     )
                 }
             }
         }
 
-        // Warning banner if model file not yet downloaded
-        if (!isModelDownloaded) {
-            Spacer(Modifier.height(8.dp))
-            Card(
+        Spacer(Modifier.height(10.dp))
+
+        // Dual Dictation Mode Selector
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            val isBatch = uiState.engineMode == HinglishEngineMode.RECORD_THEN_PROCESS
+            val isLive = uiState.engineMode == HinglishEngineMode.LIVE_REALTIME
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (isBatch) Color(0xFF10B981) else Color(0xFF1E293B),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onNavigateToModels() },
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF2D2012)),
-                border = CardDefaults.outlinedCardBorder().copy(
-                    width = 1.dp,
-                    brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFF59E0B))
-                ),
-                shape = RoundedCornerShape(10.dp)
+                    .weight(1f)
+                    .clickable { viewModel.setEngineMode(HinglishEngineMode.RECORD_THEN_PROCESS) }
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = "Warning",
-                        tint = Color(0xFFF59E0B),
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Model file not downloaded yet",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFFFCD34D)
-                        )
-                        Text(
-                            text = "Tap to download Hinglish/English/Hindi model weights or import from storage.",
-                            fontSize = 11.sp,
-                            color = Color(0xFFFDE68A)
-                        )
-                    }
                     Text(
-                        text = "GET →",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFFCD34D)
+                        text = "Record → Process (Batch)",
+                        fontSize = 12.sp,
+                        fontWeight = if (isBatch) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isBatch) Color.Black else Color.White
+                    )
+                    Text(
+                        text = "Tap to speak, tap to stop & decode",
+                        fontSize = 9.sp,
+                        color = if (isBatch) Color(0xFF064E3B) else Color(0xFF94A3B8)
+                    )
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = if (isLive) Color(0xFF10B981) else Color(0xFF1E293B),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { viewModel.setEngineMode(HinglishEngineMode.LIVE_REALTIME) }
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "⚡ Live Real-Time",
+                        fontSize = 12.sp,
+                        fontWeight = if (isLive) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isLive) Color.Black else Color.White
+                    )
+                    Text(
+                        text = "Sub-100ms streaming words",
+                        fontSize = 9.sp,
+                        color = if (isLive) Color(0xFF064E3B) else Color(0xFF94A3B8)
                     )
                 }
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
 
         // Live Audio Waveform Bars
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xFF131D31)),
-            shape = RoundedCornerShape(14.dp)
+            shape = RoundedCornerShape(12.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(14.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(42.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val barsCount = 24
-                    for (i in 0 until barsCount) {
-                        val factor = if (isListening) {
-                            ((audioLevel * ((i % 5 + 1) / 5f)).coerceIn(0.08f, 1f))
-                        } else 0.05f
-
-                        val barHeight by animateFloatAsState(targetValue = 42.dp.value * factor)
-
-                        Box(
-                            modifier = Modifier
-                                .width(4.dp)
-                                .height(barHeight.dp)
-                                .clip(RoundedCornerShape(2.dp))
-                                .background(
-                                    if (isListening) Color(0xFF10B981) else Color(0xFF334155)
-                                )
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Hinglish Real-Time Latency Mode Selector
-        var selectedHinglishMode by remember { mutableStateOf("HYBRID") }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            listOf(
-                "HYBRID" to "⚡ Hybrid (Real-Time)",
-                "STREAMING" to "⚡ Fast Stream (<100ms)",
-                "VAD" to "🎯 Whisper VAD"
-            ).forEach { (modeKey, label) ->
-                val isSelected = selectedHinglishMode == modeKey
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isSelected) Color(0xFF10B981) else Color(0xFF1E293B),
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { selectedHinglishMode = modeKey }
-                ) {
-                    Text(
-                        text = label,
-                        fontSize = 10.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isSelected) Color.Black else Color(0xFF94A3B8),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.padding(vertical = 6.dp, horizontal = 2.dp)
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        // Main Transcription Canvas
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -502,13 +434,170 @@ fun StudioScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "LIVE TRANSCRIPT",
+                        text = if (uiState.isRecording) "AUDIO INPUT (16kHz PCM)" else "AUDIO INPUT (STANDBY)",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF64748B)
+                    )
+                    Text(
+                        text = "${String.format("%.1f", uiState.currentDb)} dBFS",
+                        fontSize = 10.sp,
+                        color = Color(0xFF94A3B8),
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val barsCount = 28
+                    for (i in 0 until barsCount) {
+                        val factor = if (uiState.isRecording) {
+                            ((uiState.audioLevel * ((i % 5 + 1) / 5f)).coerceIn(0.08f, 1f))
+                        } else 0.05f
+
+                        val barHeight by animateFloatAsState(targetValue = 36.dp.value * factor)
+
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(barHeight.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(
+                                    if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF334155)
+                                )
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // Behind-The-Scenes Pipeline Inspector
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF161F30)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "BEHIND-THE-SCENES PIPELINE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = when (uiState.pipelineStage) {
+                            PipelineStage.RECORDING -> Color(0xFF047857)
+                            PipelineStage.INFERENCE_RUNNING, PipelineStage.DISPATCHING_MODEL -> Color(0xFFB45309)
+                            PipelineStage.COMPLETED -> Color(0xFF0F766E)
+                            PipelineStage.ERROR -> Color(0xFFB91C1C)
+                            else -> Color(0xFF334155)
+                        }
+                    ) {
+                        Text(
+                            text = uiState.pipelineStage.label,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text("Audio Buffer", fontSize = 9.sp, color = Color(0xFF64748B))
+                        Text(
+                            text = "${uiState.pipelineMetrics.sampleCount} samples (${String.format("%.1fs", uiState.pipelineMetrics.audioDurationSeconds)})",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                    }
+                    Column {
+                        Text("Inference Latency", fontSize = 9.sp, color = Color(0xFF64748B))
+                        Text(
+                            text = if (uiState.pipelineMetrics.inferenceTimeMs > 0) "${uiState.pipelineMetrics.inferenceTimeMs}ms" else "--",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF38BDF8)
+                        )
+                    }
+                    Column {
+                        Text("VAD Pause", fontSize = 9.sp, color = Color(0xFF64748B))
+                        Text(
+                            text = "${uiState.modelConfig.vadSilenceEndpointMs}ms",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFFCD34D)
+                        )
+                    }
+                    Column {
+                        Text("Threads", fontSize = 9.sp, color = Color(0xFF64748B))
+                        Text(
+                            text = "${uiState.modelConfig.nThreads} CPU",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF10B981)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        // Main Transcription Canvas
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (uiState.engineMode == HinglishEngineMode.LIVE_REALTIME) "LIVE STREAMING TRANSCRIPT" else "BATCH DICTATION OUTPUT",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF94A3B8)
                     )
                     Text(
-                        text = "${transcriptText.split("\\s+".toRegex()).filter { it.isNotBlank() }.size} words",
+                        text = "${uiState.pipelineMetrics.wordCount} words",
                         fontSize = 11.sp,
                         color = Color(0xFF64748B),
                         fontFamily = FontFamily.Monospace
@@ -523,27 +612,40 @@ fun StudioScreen(
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    if (transcriptText.isBlank()) {
+                    val displayText = if (uiState.liveTranscript.isNotBlank()) {
+                        uiState.liveTranscript
+                    } else if (uiState.interimStreamingText.isNotBlank()) {
+                        uiState.interimStreamingText
+                    } else ""
+
+                    if (displayText.isBlank()) {
                         Column {
                             Text(
-                                text = if (isListening) "Listening... speak into your microphone..." else "Tap the microphone below to begin speech dictation...",
-                                color = if (isListening) Color(0xFF10B981) else Color(0xFF64748B),
-                                fontSize = 16.sp,
-                                lineHeight = 24.sp
+                                text = if (uiState.isRecording) {
+                                    if (uiState.engineMode == HinglishEngineMode.RECORD_THEN_PROCESS)
+                                        "Listening and buffering audio... tap the microphone when finished to process with model."
+                                    else
+                                        "Listening... words will appear live in real-time as you speak..."
+                                } else {
+                                    "Tap the microphone button below to start voice dictation..."
+                                },
+                                color = if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF64748B),
+                                fontSize = 15.sp,
+                                lineHeight = 22.sp
                             )
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "Active Mode: ${activeModel.language}. Words spoken will be recognized directly and rendered in real time.",
+                                text = "Configured: ${uiState.modelConfig.languageCode.uppercase()} • ${uiState.modelConfig.nThreads} Threads • Auto-Punctuate: ${if (uiState.modelConfig.autoPunctuate) "ON" else "OFF"}",
                                 color = Color(0xFF475569),
-                                fontSize = 13.sp
+                                fontSize = 12.sp
                             )
                         }
                     } else {
                         Text(
-                            text = transcriptText,
+                            text = displayText,
                             color = Color.White,
-                            fontSize = 18.sp,
-                            lineHeight = 26.sp
+                            fontSize = 17.sp,
+                            lineHeight = 25.sp
                         )
                     }
                 }
@@ -554,41 +656,36 @@ fun StudioScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Test speech injection clearly labeled for simulated testing
                     TextButton(
                         onClick = {
-                            val samplePhrases = when (activeModel.languageCode) {
-                                "hi-en" -> listOf(
-                                    "Haan bhai, kal meeting schedule kar do at 10 AM.",
-                                    "Yeh offline voice dictation bahut smoothly kaam kar raha hai.",
-                                    "Please check karo and mujhe update do, thank you."
-                                )
+                            val samplePhrases = when (uiState.modelConfig.languageCode) {
                                 "hi" -> listOf(
                                     "नमस्ते, यह एक ऑफ़लाइन डिक्टेशन परीक्षण है।",
-                                    "ध्वनि पहचान बिना इंटरनेट के सुचारू रूप से कार्य कर रही है।",
-                                    "कृपया इस संदेश को सुरक्षित रखें।"
+                                    "ध्वनि पहचान बिना इंटरनेट के सुचारू रूप से कार्य कर रही है।"
                                 )
-                                else -> listOf(
+                                "en" -> listOf(
                                     "Hello, this is Voxis offline speech recognition.",
-                                    "Offline voice typing with zero cloud dependencies.",
                                     "Real time speech to text transcription on device."
                                 )
+                                else -> listOf(
+                                    "Haan bhai, kal meeting schedule kar do at 10 AM.",
+                                    "Yeh offline voice dictation smoothly kaam kar raha hai."
+                                )
                             }
-                            val phrase = samplePhrases.random()
-                            client.injectTranscribedText(phrase)
+                            client.injectTranscribedText(samplePhrases.random())
                         }
                     ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = "Test Sample", tint = Color(0xFF10B981), modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.PlayArrow, contentDescription = "Sample", tint = Color(0xFF10B981), modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Sample Injection (Test)", fontSize = 11.sp, color = Color(0xFF10B981))
+                        Text("Sample Injection", fontSize = 11.sp, color = Color(0xFF10B981))
                     }
 
                     Row {
                         IconButton(
                             onClick = {
-                                if (transcriptText.isNotBlank()) {
+                                if (uiState.liveTranscript.isNotBlank()) {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    clipboard.setPrimaryClip(ClipData.newPlainText("Voxis Transcript", transcriptText))
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Voxis Transcript", uiState.liveTranscript))
                                     Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                                 }
                             }
@@ -598,10 +695,10 @@ fun StudioScreen(
 
                         IconButton(
                             onClick = {
-                                if (transcriptText.isNotBlank()) {
+                                if (uiState.liveTranscript.isNotBlank()) {
                                     val sendIntent = Intent().apply {
                                         action = Intent.ACTION_SEND
-                                        putExtra(Intent.EXTRA_TEXT, transcriptText)
+                                        putExtra(Intent.EXTRA_TEXT, uiState.liveTranscript)
                                         type = "text/plain"
                                     }
                                     context.startActivity(Intent.createChooser(sendIntent, "Share Dictation"))
@@ -612,9 +709,7 @@ fun StudioScreen(
                         }
 
                         IconButton(
-                            onClick = {
-                                transcriptText = ""
-                            }
+                            onClick = { viewModel.clearTranscript() }
                         ) {
                             Icon(Icons.Default.DeleteOutline, contentDescription = "Clear", tint = Color(0xFF94A3B8))
                         }
@@ -623,46 +718,268 @@ fun StudioScreen(
             }
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(14.dp))
 
         // Large Dictation Trigger Button
-        val buttonScale by animateFloatAsState(targetValue = if (isListening) 1.08f else 1f)
+        val buttonScale by animateFloatAsState(targetValue = if (uiState.isRecording) 1.08f else 1f)
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(76.dp)
+                .size(74.dp)
                 .scale(buttonScale)
                 .clip(CircleShape)
-                .background(if (isListening) Color(0xFF10B981) else Color(0xFF1E293B))
-                .border(2.dp, if (isListening) Color(0xFF34D399) else Color(0xFF334155), CircleShape)
+                .background(if (uiState.isRecording) Color(0xFF10B981) else Color(0xFF1E293B))
+                .border(2.dp, if (uiState.isRecording) Color(0xFF34D399) else Color(0xFF334155), CircleShape)
                 .clickable {
                     if (!hasMicPermission) {
                         onRequestPermission()
                         return@clickable
                     }
 
-                    if (isListening) {
-                        client.stopListening()
+                    if (uiState.isRecording) {
+                        viewModel.stopTranscription()
                     } else {
-                        client.startListening()
+                        viewModel.startTranscription()
                     }
                 }
         ) {
             Icon(
-                imageVector = if (isListening) Icons.Default.Stop else Icons.Default.Mic,
+                imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
                 contentDescription = "Dictation Toggle",
                 tint = Color.White,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(34.dp)
             )
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(6.dp))
         Text(
-            text = if (isListening) "Tap to Stop" else "Tap to Dictate",
+            text = if (uiState.isRecording) {
+                if (uiState.engineMode == HinglishEngineMode.RECORD_THEN_PROCESS) "Tap to Finish & Process" else "Tap to Stop"
+            } else "Tap to Speak",
             color = Color(0xFF94A3B8),
-            fontSize = 12.sp
+            fontSize = 11.sp
         )
     }
+}
+
+/**
+ * Full Voice Model & Audio Parameters Configuration Dialog.
+ * Pre-populated with verified recommended defaults for mobile on-device execution.
+ */
+@Composable
+fun VoiceModelConfigDialog(
+    currentConfig: VoiceModelConfig,
+    onDismiss: () -> Unit,
+    onSave: (VoiceModelConfig) -> Unit,
+    onResetToRecommended: () -> Unit
+) {
+    var threads by remember { mutableStateOf(currentConfig.nThreads.toFloat()) }
+    var silenceMs by remember { mutableStateOf(currentConfig.vadSilenceEndpointMs.toFloat()) }
+    var language by remember { mutableStateOf(currentConfig.languageCode) }
+    var prompt by remember { mutableStateOf(currentConfig.initialPrompt) }
+    var autoPunctuate by remember { mutableStateOf(currentConfig.autoPunctuate) }
+    var autoCapitalize by remember { mutableStateOf(currentConfig.autoCapitalize) }
+    var decodingStrategy by remember { mutableStateOf(currentConfig.decodingStrategy) }
+    var sensitivity by remember { mutableStateOf(currentConfig.vadSensitivity) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Voice Model Parameters",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    fontSize = 16.sp
+                )
+                Text(
+                    text = "(Recommended Pre-Set)",
+                    color = Color(0xFF10B981),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "Configure on-device inference and audio processing. Recommended settings are marked for optimal mobile accuracy and speed.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF94A3B8)
+                )
+
+                Spacer(Modifier.height(14.dp))
+
+                // 1. CPU Inference Threads
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("CPU Inference Threads", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    Text("${threads.toInt()} Threads ${if (threads.toInt() == 4) "(Recommended)" else ""}", fontSize = 12.sp, color = Color(0xFF10B981))
+                }
+                Slider(
+                    value = threads,
+                    onValueChange = { threads = it },
+                    valueRange = 1f..8f,
+                    steps = 6,
+                    colors = SliderDefaults.colors(thumbColor = Color(0xFF10B981), activeTrackColor = Color(0xFF10B981))
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                // 2. VAD Silence Endpoint Threshold
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("VAD Pause Silence Endpoint", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    Text("${silenceMs.toInt()} ms ${if (silenceMs.toInt() == 280) "(Recommended)" else ""}", fontSize = 12.sp, color = Color(0xFF10B981))
+                }
+                Slider(
+                    value = silenceMs,
+                    onValueChange = { silenceMs = it },
+                    valueRange = 150f..800f,
+                    steps = 12,
+                    colors = SliderDefaults.colors(thumbColor = Color(0xFF10B981), activeTrackColor = Color(0xFF10B981))
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                // 3. Language & Dialect
+                Text("Target Language Mode", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                Spacer(Modifier.height(6.dp))
+                listOf(
+                    "hi-en" to "Hinglish (Code-Mixed) (Recommended)",
+                    "en" to "English (US / UK / Indian)",
+                    "hi" to "Hindi (हिन्दी Native Script)"
+                ).forEach { (code, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { language = code }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = language == code,
+                            onClick = { language = code },
+                            colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF10B981))
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(label, fontSize = 12.sp, color = Color.White)
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // 4. Initial Prompt Conditioning
+                Text("Initial Prompt Conditioning", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                Text("Biases decoding towards conversational vocabulary and punctuation.", fontSize = 10.sp, color = Color(0xFF64748B))
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 3,
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 11.sp, color = Color.White),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF10B981),
+                        unfocusedBorderColor = Color(0xFF334155)
+                    )
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                // 5. Post Processing Switches
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Auto-Punctuate", fontSize = 13.sp, color = Color.White)
+                        Text("(Recommended: ON)", fontSize = 10.sp, color = Color(0xFF10B981))
+                    }
+                    Switch(
+                        checked = autoPunctuate,
+                        onCheckedChange = { autoPunctuate = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF10B981))
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Auto-Capitalize", fontSize = 13.sp, color = Color.White)
+                        Text("(Recommended: ON)", fontSize = 10.sp, color = Color(0xFF10B981))
+                    }
+                    Switch(
+                        checked = autoCapitalize,
+                        onCheckedChange = { autoCapitalize = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF10B981))
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        VoiceModelConfig(
+                            nThreads = threads.toInt(),
+                            vadSilenceEndpointMs = silenceMs.toLong(),
+                            languageCode = language,
+                            initialPrompt = prompt,
+                            autoPunctuate = autoPunctuate,
+                            autoCapitalize = autoCapitalize,
+                            vadSensitivity = sensitivity,
+                            decodingStrategy = decodingStrategy
+                        )
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10B981))
+            ) {
+                Text("Save & Apply", color = Color.Black, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick = {
+                        val rec = VoiceModelConfig.getRecommended()
+                        threads = rec.nThreads.toFloat()
+                        silenceMs = rec.vadSilenceEndpointMs.toFloat()
+                        language = rec.languageCode
+                        prompt = rec.initialPrompt
+                        autoPunctuate = rec.autoPunctuate
+                        autoCapitalize = rec.autoCapitalize
+                        sensitivity = rec.vadSensitivity
+                        decodingStrategy = rec.decodingStrategy
+                        onResetToRecommended()
+                    }
+                ) {
+                    Text("Reset Recommended", color = Color(0xFFFCD34D), fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel", color = Color(0xFF94A3B8), fontSize = 12.sp)
+                }
+            }
+        },
+        containerColor = Color(0xFF1E293B)
+    )
 }
 
 @Composable

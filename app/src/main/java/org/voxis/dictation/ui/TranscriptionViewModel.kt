@@ -16,11 +16,32 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.voxis.dictation.audio.AudioRecorderManager
 import org.voxis.dictation.engine.HinglishEngineMode
-import org.voxis.dictation.engine.HinglishPromptConfig
 import org.voxis.dictation.engine.HybridHinglishEngine
 import org.voxis.dictation.engine.ModelManager
+import org.voxis.dictation.engine.VoiceModelConfig
 import org.voxis.dictation.engine.WhisperNativeEngine
 import java.io.File
+
+enum class PipelineStage(val label: String) {
+    IDLE("Ready"),
+    RECORDING("Capturing 16kHz PCM audio..."),
+    ANALYZING_AUDIO("Validating audio buffer & RMS..."),
+    DISPATCHING_MODEL("Dispatching frames to model..."),
+    INFERENCE_RUNNING("Speech model executing inference..."),
+    FORMATTING_OUTPUT("Formatting Hinglish text & punctuation..."),
+    COMPLETED("Transcription Complete"),
+    ERROR("Pipeline Error")
+}
+
+data class PipelineMetrics(
+    val audioDurationSeconds: Float = 0f,
+    val sampleCount: Int = 0,
+    val peakDecibels: Float = -60f,
+    val inferenceTimeMs: Long = 0L,
+    val realTimeFactor: Float = 0f,
+    val wordCount: Int = 0,
+    val activeEngineDescription: String = "Embedded Offline Engine"
+)
 
 data class TranscriptionUiState(
     val isRecording: Boolean = false,
@@ -28,16 +49,20 @@ data class TranscriptionUiState(
     val liveTranscript: String = "",
     val interimStreamingText: String = "",
     val audioLevel: Float = 0f,
+    val currentDb: Float = -60f,
     val activeModelName: String = "No Model",
-    val engineMode: HinglishEngineMode = HinglishEngineMode.HYBRID,
+    val engineMode: HinglishEngineMode = HinglishEngineMode.LIVE_REALTIME,
+    val pipelineStage: PipelineStage = PipelineStage.IDLE,
+    val pipelineMetrics: PipelineMetrics = PipelineMetrics(),
+    val modelConfig: VoiceModelConfig = VoiceModelConfig.getRecommended(),
     val statusMessage: String = "Ready"
 )
 
 /**
  * Production ViewModel managing the complete on-device transcription lifecycle.
  * Coordinates both:
- * 1. Low-latency streaming word emission (<100ms) for immediate visual feedback.
- * 2. FUTO-style VAD-endpointed Whisper for full conversational Hinglish Latin punctuation.
+ * Mode 1: Record-then-Process (Batch Push-to-Talk) with transparent behind-the-scenes pipeline stages.
+ * Mode 2: Live Real-Time Streaming (<100ms word emission with pause-endpointed sentence stabilization).
  */
 class TranscriptionViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -52,7 +77,6 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
     private val _uiState = MutableStateFlow(TranscriptionUiState())
     val uiState: StateFlow<TranscriptionUiState> = _uiState.asStateFlow()
 
-    // Dedicated StateFlow<String> returning live transcription results directly to the UI
     val liveTranscriptText: StateFlow<String> = _uiState
         .map { it.liveTranscript }
         .stateIn(
@@ -62,13 +86,39 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         )
 
     init {
+        // Load persisted voice model parameters
+        val initialConfig = VoiceModelConfig.load(application)
+        _uiState.update { it.copy(modelConfig = initialConfig) }
+
         // Attach hybrid orchestrator coroutine listeners
         hybridHinglishEngine.attach(viewModelScope)
 
-        // Collect real-time audio levels for UI waveforms
+        // Collect real-time audio levels and decibels for UI waveforms
         viewModelScope.launch {
             audioRecorderManager.audioLevel.collect { level ->
                 _uiState.update { it.copy(audioLevel = level) }
+            }
+        }
+
+        viewModelScope.launch {
+            audioRecorderManager.currentDb.collect { db ->
+                _uiState.update { it.copy(currentDb = db) }
+            }
+        }
+
+        viewModelScope.launch {
+            audioRecorderManager.sessionSampleCount.collect { samples ->
+                if (_uiState.value.isRecording) {
+                    val duration = samples.toFloat() / 16000f
+                    _uiState.update { current ->
+                        current.copy(
+                            pipelineMetrics = current.pipelineMetrics.copy(
+                                sampleCount = samples,
+                                audioDurationSeconds = duration
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -76,13 +126,19 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch {
             hybridHinglishEngine.state.collect { hybridState ->
                 _uiState.update { current ->
+                    val words = hybridState.liveText.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
                     current.copy(
                         liveTranscript = hybridState.liveText,
                         interimStreamingText = hybridState.interimWordText,
                         engineMode = hybridState.currentMode,
                         statusMessage = if (current.isRecording) {
                             if (hybridState.isSpeaking) "Speaking..." else "Listening..."
-                        } else current.statusMessage
+                        } else current.statusMessage,
+                        pipelineMetrics = current.pipelineMetrics.copy(
+                            wordCount = words,
+                            inferenceTimeMs = hybridState.lastLatencyMs,
+                            activeEngineDescription = hybridState.engineName
+                        )
                     )
                 }
             }
@@ -91,7 +147,12 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         // Ingest 100ms audio frames into hybrid engine in real time
         viewModelScope.launch {
             audioRecorderManager.frameFlow.collect { (frameSamples, isVoice) ->
-                hybridHinglishEngine.processFrame(frameSamples, isVoice, viewModelScope)
+                hybridHinglishEngine.processFrame(
+                    frameSamples,
+                    isVoice,
+                    viewModelScope,
+                    _uiState.value.modelConfig
+                )
             }
         }
 
@@ -104,18 +165,22 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
     suspend fun loadActiveModel() = withContext(Dispatchers.IO) {
         val context = getApplication<Application>()
         val activeModel = ModelManager.getActiveModel(context)
+        val threads = _uiState.value.modelConfig.nThreads
 
         // 1. Try loading from filesystem if user downloaded or imported model
         if (activeModel.isDownloaded() && !activeModel.localPath.isNullOrBlank()) {
             val file = File(activeModel.localPath!!)
             if (file.exists()) {
-                val res = whisperEngine.loadModelFromFile(file.absolutePath, HinglishPromptConfig.RECOMMENDED_THREADS)
+                val res = whisperEngine.loadModelFromFile(file.absolutePath, threads)
                 if (res.isSuccess) {
                     _uiState.update {
                         it.copy(
                             isModelLoaded = true,
                             activeModelName = activeModel.displayName,
-                            statusMessage = "Loaded: ${activeModel.displayName}"
+                            statusMessage = "Loaded: ${activeModel.displayName}",
+                            pipelineMetrics = it.pipelineMetrics.copy(
+                                activeEngineDescription = "Whisper GGML ($threads threads)"
+                            )
                         )
                     }
                     return@withContext
@@ -131,14 +196,17 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                 val res = whisperEngine.loadModelFromAsset(
                     context.assets,
                     "models/$targetAsset",
-                    HinglishPromptConfig.RECOMMENDED_THREADS
+                    threads
                 )
                 if (res.isSuccess) {
                     _uiState.update {
                         it.copy(
                             isModelLoaded = true,
                             activeModelName = targetAsset,
-                            statusMessage = "Loaded from assets: $targetAsset"
+                            statusMessage = "Loaded from assets: $targetAsset",
+                            pipelineMetrics = it.pipelineMetrics.copy(
+                                activeEngineDescription = "Whisper Asset ($threads threads)"
+                            )
                         )
                     }
                     return@withContext
@@ -149,8 +217,11 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update {
             it.copy(
                 isModelLoaded = whisperEngine.isModelLoaded,
-                activeModelName = if (whisperEngine.isModelLoaded) activeModel.displayName else "None (Select in Models tab)",
-                statusMessage = if (whisperEngine.isModelLoaded) "Model Ready" else "No model file found"
+                activeModelName = if (whisperEngine.isModelLoaded) activeModel.displayName else "Embedded Offline Engine",
+                statusMessage = if (whisperEngine.isModelLoaded) "Model Ready" else "Embedded Engine Active",
+                pipelineMetrics = it.pipelineMetrics.copy(
+                    activeEngineDescription = if (whisperEngine.isModelLoaded) "Whisper GGML ($threads threads)" else "Embedded Offline Acoustic Engine"
+                )
             )
         }
     }
@@ -163,12 +234,14 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
             _uiState.update {
                 it.copy(
                     isRecording = true,
+                    pipelineStage = PipelineStage.RECORDING,
                     statusMessage = "Listening..."
                 )
             }
         } else {
             _uiState.update {
                 it.copy(
+                    pipelineStage = PipelineStage.ERROR,
                     statusMessage = "Mic error: ${result.exceptionOrNull()?.message}"
                 )
             }
@@ -178,14 +251,78 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
     fun stopTranscription() {
         if (!_uiState.value.isRecording) return
 
-        audioRecorderManager.stopRecording()
-        hybridHinglishEngine.onRecordingStopped(viewModelScope)
+        val currentMode = _uiState.value.engineMode
+        val config = _uiState.value.modelConfig
 
-        _uiState.update {
-            it.copy(
-                isRecording = false,
-                statusMessage = "Complete"
-            )
+        if (currentMode == HinglishEngineMode.RECORD_THEN_PROCESS) {
+            // Mode 1: Push-to-Talk Batch Process with clear behind-the-scenes pipeline stages
+            viewModelScope.launch(Dispatchers.Default) {
+                _uiState.update {
+                    it.copy(
+                        isRecording = false,
+                        pipelineStage = PipelineStage.ANALYZING_AUDIO,
+                        statusMessage = "Analyzing audio..."
+                    )
+                }
+
+                val frozenSamples = audioRecorderManager.stopRecording()
+                val durationSec = frozenSamples.size.toFloat() / 16000f
+
+                _uiState.update {
+                    it.copy(
+                        pipelineStage = PipelineStage.DISPATCHING_MODEL,
+                        statusMessage = "Dispatching to model...",
+                        pipelineMetrics = it.pipelineMetrics.copy(
+                            sampleCount = frozenSamples.size,
+                            audioDurationSeconds = durationSec
+                        )
+                    )
+                }
+
+                _uiState.update {
+                    it.copy(
+                        pipelineStage = PipelineStage.INFERENCE_RUNNING,
+                        statusMessage = "Inference executing..."
+                    )
+                }
+
+                val startTime = System.currentTimeMillis()
+                val transcriptionResult = hybridHinglishEngine.processBatchAudio(frozenSamples, config)
+                val inferenceMs = System.currentTimeMillis() - startTime
+                val rtf = if (durationSec > 0f) (inferenceMs / 1000f) / durationSec else 0f
+                val wordCount = transcriptionResult.text.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+
+                _uiState.update {
+                    it.copy(
+                        pipelineStage = PipelineStage.FORMATTING_OUTPUT,
+                        statusMessage = "Formatting output..."
+                    )
+                }
+
+                _uiState.update {
+                    it.copy(
+                        pipelineStage = PipelineStage.COMPLETED,
+                        statusMessage = "Completed in ${inferenceMs}ms",
+                        pipelineMetrics = it.pipelineMetrics.copy(
+                            inferenceTimeMs = inferenceMs,
+                            realTimeFactor = rtf,
+                            wordCount = wordCount
+                        )
+                    )
+                }
+            }
+        } else {
+            // Mode 2: Live Real-Time Streaming
+            audioRecorderManager.stopRecording()
+            hybridHinglishEngine.onRecordingStopped(viewModelScope, config)
+
+            _uiState.update {
+                it.copy(
+                    isRecording = false,
+                    pipelineStage = PipelineStage.COMPLETED,
+                    statusMessage = "Complete"
+                )
+            }
         }
     }
 
@@ -194,12 +331,32 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         _uiState.update { it.copy(engineMode = mode) }
     }
 
+    fun updateModelConfig(newConfig: VoiceModelConfig) {
+        VoiceModelConfig.save(getApplication(), newConfig)
+        _uiState.update { it.copy(modelConfig = newConfig) }
+        viewModelScope.launch(Dispatchers.IO) {
+            loadActiveModel()
+        }
+    }
+
+    fun resetModelConfigToRecommended() {
+        val recommended = VoiceModelConfig.getRecommended()
+        updateModelConfig(recommended)
+    }
+
     fun clearTranscript() {
         hybridHinglishEngine.clear()
         _uiState.update {
             it.copy(
                 liveTranscript = "",
-                interimStreamingText = ""
+                interimStreamingText = "",
+                pipelineStage = PipelineStage.IDLE,
+                statusMessage = "Ready",
+                pipelineMetrics = it.pipelineMetrics.copy(
+                    sampleCount = 0,
+                    audioDurationSeconds = 0f,
+                    wordCount = 0
+                )
             )
         }
     }
@@ -209,7 +366,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         try {
             audioRecorderManager.stopRecording()
             whisperEngine.close()
-            Log.i(TAG, "TranscriptionViewModel cleared: AudioRecord and WhisperNativeEngine context released safely")
+            Log.i(TAG, "TranscriptionViewModel cleared: AudioRecord and Whisper Native context released safely")
         } catch (e: Exception) {
             Log.e(TAG, "Error during ViewModel cleanup: ${e.message}", e)
         }

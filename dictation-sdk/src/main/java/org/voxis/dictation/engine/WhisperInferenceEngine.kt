@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.voxis.dictation.audio.AudioChunk
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 
 interface InferenceEngine {
     val model: SpeechModel
@@ -28,7 +27,8 @@ class WhisperInferenceEngine(
 
     val hasLoadedModel: Boolean get() = model.isDownloaded()
 
-    private val sampleBuffer = mutableListOf<Short>()
+    private val sampleBuffer = mutableListOf<Float>()
+    private val acousticEngine = StreamingAcousticEngine()
     private val accumulatedText = StringBuilder()
     private var lastDecodedSegment = ""
     private var repetitionCount = 0
@@ -39,6 +39,7 @@ class WhisperInferenceEngine(
             accumulatedText.clear()
             lastDecodedSegment = ""
             repetitionCount = 0
+            acousticEngine.reset()
             initialized.set(true)
             Result.success(Unit)
         } catch (e: Exception) {
@@ -51,8 +52,21 @@ class WhisperInferenceEngine(
 
         synchronized(sampleBuffer) {
             for (i in 0 until audioChunk.length) {
-                sampleBuffer.add(audioChunk.samples[i])
+                sampleBuffer.add(audioChunk.samples[i] / 32768.0f)
             }
+        }
+
+        val floatChunk = FloatArray(audioChunk.length) { i -> audioChunk.samples[i] / 32768.0f }
+        val decoded = acousticEngine.decodeBatchAudio(floatChunk, VoiceModelConfig(languageCode = model.languageCode))
+        if (decoded.isNotBlank()) {
+            if (accumulatedText.isNotEmpty()) accumulatedText.append(" ")
+            accumulatedText.append(decoded)
+            return@withContext TranscriptionResult(
+                text = accumulatedText.toString(),
+                isFinal = false,
+                confidence = 0.94f,
+                durationMs = (sampleBuffer.size * 1000L) / 16000L
+            )
         }
 
         decodeStreamingSamples(isFinal = false)
@@ -60,6 +74,15 @@ class WhisperInferenceEngine(
 
     override suspend fun finalizeTranscription(): TranscriptionResult? = withContext(Dispatchers.Default) {
         if (!initialized.get()) return@withContext null
+
+        val samplesArray = synchronized(sampleBuffer) { sampleBuffer.toFloatArray() }
+        if (samplesArray.isNotEmpty() && accumulatedText.isBlank()) {
+            val decoded = acousticEngine.decodeBatchAudio(samplesArray, VoiceModelConfig(languageCode = model.languageCode))
+            if (decoded.isNotBlank()) {
+                accumulatedText.append(decoded)
+            }
+        }
+
         val finalResult = decodeStreamingSamples(isFinal = true)
         reset()
         finalResult
@@ -71,7 +94,6 @@ class WhisperInferenceEngine(
 
         val samplesCount = synchronized(sampleBuffer) { sampleBuffer.size }
         val durationMs = (samplesCount * 1000L) / 16000L
-
         val formatted = formatter.format(raw)
 
         return TranscriptionResult(
@@ -111,6 +133,7 @@ class WhisperInferenceEngine(
         accumulatedText.clear()
         lastDecodedSegment = ""
         repetitionCount = 0
+        acousticEngine.reset()
     }
 
     override fun release() {

@@ -25,7 +25,7 @@ import kotlin.math.sqrt
 /**
  * Production-ready Audio Capture & Normalization Pipeline targeting Android 13+ (API 33+).
  * Captures 16000Hz mono 16-bit PCM, converts directly to [-1.0, 1.0] float buffers,
- * and buffers speech chunks (3 to 5 seconds or on voice activity boundaries).
+ * preserves complete session audio for Batch processing, and streams 100ms frames for Live mode.
  */
 class AudioRecorderManager {
 
@@ -56,10 +56,22 @@ class AudioRecorderManager {
     private val _audioLevel = MutableStateFlow(0f)
     val audioLevel: StateFlow<Float> = _audioLevel.asStateFlow()
 
+    // Real-time audio Decibels for UI metrics
+    private val _currentDb = MutableStateFlow(-60f)
+    val currentDb: StateFlow<Float> = _currentDb.asStateFlow()
+
+    // Total samples recorded in current active session
+    private val _sessionSampleCount = MutableStateFlow(0)
+    val sessionSampleCount: StateFlow<Int> = _sessionSampleCount.asStateFlow()
+
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
-    // Internal rolling sample accumulator
+    // Complete session buffer preserved for Mode 1 (Batch Record-then-Process)
+    private val fullSessionBuffer = ArrayList<Float>(SAMPLE_RATE * 30) // Up to 30s session
+    private val sessionLock = Any()
+
+    // Rolling sample accumulator for chunk emission
     private val sampleAccumulator = ArrayList<Float>(HinglishPromptConfig.MAX_BUFFER_SAMPLES)
     private val accumulatorLock = Any()
 
@@ -75,7 +87,6 @@ class AudioRecorderManager {
             return Result.failure(IllegalStateException("Unable to query valid AudioRecord buffer size"))
         }
 
-        // Use a generous 4x buffer to prevent hardware overrun on Android 13+
         val bufferSize = (minBufferSize * 4).coerceAtLeast(SAMPLE_RATE * 2)
 
         val record = try {
@@ -106,9 +117,13 @@ class AudioRecorderManager {
         isRunning.set(true)
         _isRecording.value = true
 
+        synchronized(sessionLock) {
+            fullSessionBuffer.clear()
+        }
         synchronized(accumulatorLock) {
             sampleAccumulator.clear()
         }
+        _sessionSampleCount.value = 0
 
         recordingJob = scope.launch(Dispatchers.IO) {
             val readBuffer = ShortArray(1600) // 100ms chunks (1600 samples @ 16kHz)
@@ -123,6 +138,7 @@ class AudioRecorderManager {
                     // 1. Calculate RMS and dBFS
                     val rms = calculateRms(readBuffer, readSamples)
                     val db = calculateDecibels(rms)
+                    _currentDb.value = db
                     val normalizedLevel = ((db + 60f) / 60f).coerceIn(0f, 1f)
                     _audioLevel.value = normalizedLevel
 
@@ -132,6 +148,14 @@ class AudioRecorderManager {
                         normalizedFloats[i] = readBuffer[i].toFloat() / 32768.0f
                     }
 
+                    // Preserve into full session buffer for Mode 1
+                    synchronized(sessionLock) {
+                        for (sample in normalizedFloats) {
+                            fullSessionBuffer.add(sample)
+                        }
+                        _sessionSampleCount.value = fullSessionBuffer.size
+                    }
+
                     val now = System.currentTimeMillis()
                     val isVoice = db > SILENCE_THRESHOLD_DB
                     if (isVoice) {
@@ -139,10 +163,10 @@ class AudioRecorderManager {
                         speechDetectedInSession = true
                     }
 
-                    // Emit 100ms frame immediately for real-time streaming engines
+                    // Emit 100ms frame immediately for real-time streaming engines (Mode 2)
                     _frameFlow.emit(Pair(normalizedFloats, isVoice))
 
-                    // 3. Accumulate samples with chunking threshold logic
+                    // 3. Accumulate samples for rolling chunks
                     var chunkToEmit: FloatArray? = null
                     synchronized(accumulatorLock) {
                         for (sample in normalizedFloats) {
@@ -150,16 +174,10 @@ class AudioRecorderManager {
                         }
 
                         val currentCount = sampleAccumulator.size
-
-                        // Condition A: Buffer reached target threshold (e.g., 3.0s = 48,000 samples)
                         val reachedTargetWindow = currentCount >= HinglishPromptConfig.TARGET_CHUNK_SAMPLES
-
-                        // Condition B: Silence pause detected after minimum speech (e.g. >1.5s speech followed by 750ms silence)
                         val speechPauseDetected = speechDetectedInSession &&
                                 (currentCount >= (SAMPLE_RATE * HinglishPromptConfig.MIN_CHUNK_DURATION_MS / 1000)) &&
                                 ((now - lastVoiceActivityTimeMs) > SILENCE_TIMEOUT_MS)
-
-                        // Condition C: Buffer reached hard maximum (5.0s = 80,000 samples)
                         val reachedMaxWindow = currentCount >= HinglishPromptConfig.MAX_BUFFER_SAMPLES
 
                         if (reachedTargetWindow || speechPauseDetected || reachedMaxWindow) {
@@ -169,7 +187,6 @@ class AudioRecorderManager {
                         }
                     }
 
-                    // Emit to inference pipeline
                     chunkToEmit?.let { chunk ->
                         if (chunk.isNotEmpty()) {
                             _audioChunkFlow.emit(chunk)
@@ -189,18 +206,14 @@ class AudioRecorderManager {
     }
 
     @Synchronized
-    fun stopRecording(): FloatArray? {
+    fun stopRecording(): FloatArray {
         stopInternal()
 
-        // Flush remaining buffered audio on stop
-        return synchronized(accumulatorLock) {
-            if (sampleAccumulator.isNotEmpty()) {
-                val remaining = sampleAccumulator.toFloatArray()
-                sampleAccumulator.clear()
-                remaining
-            } else {
-                null
-            }
+        // Return complete frozen audio buffer for Mode 1 batch processing
+        return synchronized(sessionLock) {
+            val fullArray = fullSessionBuffer.toFloatArray()
+            fullSessionBuffer.clear()
+            fullArray
         }
     }
 
