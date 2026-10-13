@@ -172,11 +172,10 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
         val activeModel = ModelManager.getActiveModel(context)
         val threads = _uiState.value.modelConfig.nThreads
 
-        // 1. Try loading from filesystem if user downloaded or imported model
-        if (activeModel.isDownloaded() && !activeModel.localPath.isNullOrBlank()) {
+        // 1. Try loading from activeModel localPath if present
+        if (!activeModel.localPath.isNullOrBlank()) {
             val file = File(activeModel.localPath!!)
-            if (file.exists()) {
-                // If it's a directory (Vosk model)
+            if (file.exists() && file.length() > 0) {
                 if (file.isDirectory) {
                     val res = hybridHinglishEngine.voskEngine.loadModel(file.absolutePath)
                     if (res.isSuccess) {
@@ -184,7 +183,7 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                             it.copy(
                                 isModelLoaded = true,
                                 activeModelName = activeModel.displayName,
-                                statusMessage = "Loaded: ${activeModel.displayName}",
+                                statusMessage = "Model Loaded: ${activeModel.displayName}",
                                 pipelineMetrics = it.pipelineMetrics.copy(
                                     activeEngineDescription = "Vosk Neural Engine (${activeModel.language})"
                                 )
@@ -192,16 +191,16 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                         }
                         return@withContext
                     }
-                } else if (file.isFile && (file.name.endsWith(".bin") || file.name.endsWith(".gguf"))) {
+                } else if (file.isFile) {
                     val res = whisperEngine.loadModelFromFile(file.absolutePath, threads)
                     if (res.isSuccess) {
                         _uiState.update {
                             it.copy(
                                 isModelLoaded = true,
                                 activeModelName = activeModel.displayName,
-                                statusMessage = "Loaded: ${activeModel.displayName}",
+                                statusMessage = "Model Loaded: ${activeModel.displayName}",
                                 pipelineMetrics = it.pipelineMetrics.copy(
-                                    activeEngineDescription = "Whisper GGML ($threads threads)"
+                                    activeEngineDescription = "Whisper Neural Engine (${activeModel.displayName})"
                                 )
                             )
                         }
@@ -211,7 +210,46 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
             }
         }
 
-        // 2. Try loading bundled asset if present in assets/models/
+        // 2. Scan models directory for any downloaded or user-imported model files
+        val modelsDir = ModelManager.getModelsDir(context)
+        val candidateFiles = modelsDir.listFiles() ?: emptyArray()
+        for (candidate in candidateFiles) {
+            if (candidate.isDirectory) {
+                val res = hybridHinglishEngine.voskEngine.loadModel(candidate.absolutePath)
+                if (res.isSuccess) {
+                    _uiState.update {
+                        it.copy(
+                            isModelLoaded = true,
+                            activeModelName = candidate.name,
+                            statusMessage = "Model Loaded: ${candidate.name}",
+                            pipelineMetrics = it.pipelineMetrics.copy(
+                                activeEngineDescription = "Vosk Neural Engine (${candidate.name})"
+                            )
+                        )
+                    }
+                    return@withContext
+                }
+            } else if (candidate.isFile && candidate.length() > 0 &&
+                (candidate.name.endsWith(".bin") || candidate.name.endsWith(".gguf") || candidate.name.contains("model"))
+            ) {
+                val res = whisperEngine.loadModelFromFile(candidate.absolutePath, threads)
+                if (res.isSuccess) {
+                    _uiState.update {
+                        it.copy(
+                            isModelLoaded = true,
+                            activeModelName = candidate.name,
+                            statusMessage = "Model Loaded: ${candidate.name}",
+                            pipelineMetrics = it.pipelineMetrics.copy(
+                                activeEngineDescription = "Whisper Neural Engine (${candidate.name})"
+                            )
+                        )
+                    }
+                    return@withContext
+                }
+            }
+        }
+
+        // 3. Try loading bundled asset if present in assets/models/
         try {
             val assetList = context.assets.list("models") ?: emptyArray()
             val targetAsset = assetList.firstOrNull { it.endsWith(".bin") || it.endsWith(".gguf") }
@@ -416,15 +454,9 @@ class TranscriptionViewModel(application: Application) : AndroidViewModel(applic
                 } else {
                     // No offline model loaded yet
                     _uiState.update {
-                        val currentText = it.liveTranscript
-                        val fallbackNotice = if (currentText.isBlank()) {
-                            "Audio captured (${String.format("%.1f", durationSec)}s, ${frozenSamples.size} samples @ 16kHz PCM). Microphone input is active and verified! To transcribe your voice completely offline, download a speech model (e.g. Whisper Tiny 75MB or Vosk Small 42MB) in the Models tab."
-                        } else currentText
-
                         it.copy(
-                            liveTranscript = fallbackNotice,
                             pipelineStage = PipelineStage.COMPLETED,
-                            statusMessage = "Audio captured (${String.format("%.1f", durationSec)}s). Download model in Models tab to decode."
+                            statusMessage = if (it.liveTranscript.isNotBlank()) "Transcription ready" else "Audio captured (${String.format("%.1f", durationSec)}s). Download model in Models tab to decode."
                         )
                     }
                 }

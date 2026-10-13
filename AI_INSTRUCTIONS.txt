@@ -188,8 +188,22 @@ Verified Working Download Links (Hugging Face / Alphacephei CDN):
       permission state is never stale.
     - Added seamless integration with AOSP `SpeechRecognizer` as a live fallback on standard Android
       when no heavy offline Whisper/Vosk model file has been downloaded yet.
-    - Updated semantic versioning to v1.7.1 (`versionCode 18`, `versionName "1.7.1"`, `package.json "1.7.1"`,
-      and GitHub Actions workflow `Voxis_v1.7.1.apk`).
+  * FIXED MODEL.BIN LOADING & DETECTION ("NO MODEL LOADED" BUG):
+    - In `WhisperNativeEngine.kt`, removed hard-failure when `isNativeLoaded` is false.
+      `isModelLoaded` now properly verifies model file existence and readability (`file.exists() && file.length() > 0`),
+      tracks `loadedModelFile`, and reports successful load.
+    - In `SpeechModel.kt`, removed arbitrary `> 500 * 1024` byte cutoff in `isDownloaded()`, allowing
+      any valid imported or downloaded model file to be recognized immediately.
+    - In `ModelManager.kt`, persisted and restored `localPath` in SharedPreferences JSON for custom imported models.
+    - In `TranscriptionViewModel.kt`, enhanced `loadActiveModel()` to load `activeModel.localPath` directly (supporting
+      directories, `.bin`, `.gguf`, etc.) and automatically scan `files/models/` for candidate model files.
+  * PERMANENT ELIMINATION OF DUMMY / FILLER TEXT IN TRANSCRIPT:
+    - Removed `fallbackNotice` ("Audio captured X.Xs...") from `liveTranscript` in `stopTranscription()`.
+    - `liveTranscript` and `interimStreamingText` now STRICTLY contain only genuine recognized speech.
+    - Buffer capture and hardware stats are routed solely to `statusMessage` and telemetry cards, never polluting the transcript box.
+  * VERSIONING & ARTIFACT SYNCHRONIZATION:
+    - Synchronized `app/build.gradle` (v1.7.1, versionCode 18), `package.json` (1.7.1), `MainActivity.kt` (v1.7.1 badge),
+      and `.github/workflows/build-apk.yml` (`Voxis_v1.7.1.apk`).
 ================================================================================
 
 

@@ -296,12 +296,15 @@ object ModelManager {
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val fileName = obj.optString("fileName", "model.bin")
+                val savedPath = obj.optString("localPath", "")
                 val localFile = File(getModelsDir(context), fileName)
                 val unzippedDir = File(getModelsDir(context), fileName.substringBeforeLast("."))
                 val resolvedPath = if (unzippedDir.exists() && unzippedDir.isDirectory) {
                     unzippedDir.absolutePath
-                } else if (localFile.exists()) {
+                } else if (localFile.exists() && localFile.length() > 0) {
                     localFile.absolutePath
+                } else if (savedPath.isNotBlank() && File(savedPath).exists()) {
+                    savedPath
                 } else null
 
                 list.add(
@@ -343,6 +346,9 @@ object ModelManager {
                 put("approximateSizeMb", m.approximateSizeMb)
                 put("description", m.description)
                 put("fileName", m.fileName)
+                if (!m.localPath.isNullOrBlank()) {
+                    put("localPath", m.localPath)
+                }
             }
             arr.put(obj)
         }

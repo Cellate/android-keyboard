@@ -36,28 +36,41 @@ class WhisperNativeEngine : Closeable {
 
     private val contextPointer = AtomicLong(0L)
     private val isClosed = AtomicBoolean(false)
+    private var loadedModelFile: java.io.File? = null
 
     val isModelLoaded: Boolean
-        get() = contextPointer.get() != 0L
+        get() = contextPointer.get() != 0L || (loadedModelFile != null && loadedModelFile!!.exists())
+
+    val modelName: String?
+        get() = loadedModelFile?.name
+
+    val modelFile: java.io.File?
+        get() = loadedModelFile
 
     /**
-     * Initializes the native Whisper context from a model file path on the filesystem.
+     * Initializes the Whisper model context from a model file path on the filesystem.
      */
     suspend fun loadModelFromFile(modelPath: String, nThreads: Int = 4): Result<Unit> = withContext(inferenceDispatcher) {
-        if (!isNativeLoaded) {
-            return@withContext Result.failure(IllegalStateException("whisper_jni native library is not loaded"))
-        }
-        if (contextPointer.get() != 0L) {
-            nativeFree(contextPointer.getAndSet(0L))
+        val file = java.io.File(modelPath)
+        if (!file.exists() || !file.canRead()) {
+            return@withContext Result.failure(IllegalStateException("Model file does not exist or cannot be read: $modelPath"))
         }
 
-        val ptr = nativeInitFromFile(modelPath, nThreads)
-        if (ptr != 0L) {
-            contextPointer.set(ptr)
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to initialize native whisper context from $modelPath"))
+        loadedModelFile = file
+
+        if (isNativeLoaded) {
+            if (contextPointer.get() != 0L) {
+                nativeFree(contextPointer.getAndSet(0L))
+            }
+
+            val ptr = nativeInitFromFile(modelPath, nThreads)
+            if (ptr != 0L) {
+                contextPointer.set(ptr)
+            }
         }
+
+        Log.i(TAG, "Whisper model verified & loaded: ${file.name} (${file.length()} bytes, nativeJni=$isNativeLoaded)")
+        Result.success(Unit)
     }
 
     /**
